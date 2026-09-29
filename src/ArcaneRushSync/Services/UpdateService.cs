@@ -160,7 +160,7 @@ public sealed class UpdateService
         psi.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         psi.ArgumentList.Add(updateRoot);
 
-        Process.Start(psi) ?? throw new InvalidOperationException("Impossible de démarrer l'installation de la mise à jour.");
+        _ = Process.Start(psi) ?? throw new InvalidOperationException("Impossible de démarrer l'installation de la mise à jour.");
     }
 
     public static int ApplyUpdateAndRestart(string payloadDirectory, string installDirectory, int oldProcessId, string updateRoot)
