@@ -25,6 +25,7 @@ public sealed class GameScannerService : IAsyncDisposable
 
     public event Action<GameSnapshot>? SnapshotChanged;
     public event Action<string>? StatusChanged;
+    public event Action? Stopped;
 
     public bool IsRunning => _running;
     public int NumericReferenceCount => _detector.NumericReferenceCount;
@@ -181,6 +182,7 @@ public sealed class GameScannerService : IAsyncDisposable
             StatusChanged?.Invoke(final.IsComplete(AppConfig.ExpectedDeckCount)
                 ? $"Scan terminé ✓ · {final.PlayerName} + {final.OwnedCardIds.Count} cartes + 13 decks · réseau Windows restauré."
                 : "Scan arrêté · réseau Windows restauré. Le certificat local dédié reste approuvé pour les prochains scans.");
+            Stopped?.Invoke();
             await Task.CompletedTask;
         }
         finally
@@ -281,7 +283,6 @@ public sealed class GameScannerService : IAsyncDisposable
                 var snap = Snapshot;
                 SnapshotChanged?.Invoke(snap);
                 StatusChanged?.Invoke(StatusForSnapshot(snap));
-                if (snap.IsComplete(AppConfig.ExpectedDeckCount)) ScheduleStop();
             }
         }
         catch (Exception ex)
@@ -425,9 +426,6 @@ public sealed class GameScannerService : IAsyncDisposable
                 var snap = Snapshot;
                 SnapshotChanged?.Invoke(snap);
                 StatusChanged?.Invoke(StatusForSnapshot(snap));
-
-                if (snap.IsComplete(AppConfig.ExpectedDeckCount))
-                    ScheduleStop();
             }
         }
         catch (Exception ex)
@@ -438,7 +436,9 @@ public sealed class GameScannerService : IAsyncDisposable
 
     private async Task WatchLoopAsync(CancellationToken token)
     {
-        var started = DateTimeOffset.UtcNow;
+        DateTimeOffset? gameObservedAt = GameLauncherService.IsRunning()
+            ? DateTimeOffset.UtcNow
+            : null;
         var warnedNoTraffic = false;
         var warnedTrafficNoDeck = false;
 
@@ -467,11 +467,19 @@ public sealed class GameScannerService : IAsyncDisposable
                         var snap = Snapshot;
                         SnapshotChanged?.Invoke(snap);
                         StatusChanged?.Invoke(StatusForSnapshot(snap));
-                        if (snap.IsComplete(AppConfig.ExpectedDeckCount)) ScheduleStop();
                     }
                 }
 
-                var elapsed = DateTimeOffset.UtcNow - started;
+                var now = DateTimeOffset.UtcNow;
+                if (gameObservedAt is null && GameLauncherService.IsRunning())
+                {
+                    gameObservedAt = now;
+                    AppLog.Info("Arcane Rush process detected after scanner start; scan timeout window begins now.");
+                }
+
+                var elapsed = gameObservedAt is null
+                    ? TimeSpan.Zero
+                    : now - gameObservedAt.Value;
                 var apiSeen = Interlocked.Read(ref _apiResponsesSeen);
                 var deckCount = Snapshot.Decks.Count;
 
@@ -490,7 +498,7 @@ public sealed class GameScannerService : IAsyncDisposable
                     StatusChanged?.Invoke("Le jeu est bien détecté, mais aucun deck sûr n'a encore été validé. Laisse le menu chargé quelques secondes de plus.");
                 }
 
-                if (elapsed > TimeSpan.FromMinutes(2))
+                if (gameObservedAt is not null && elapsed > TimeSpan.FromMinutes(2))
                 {
                     var snap = Snapshot;
                     string paths;
@@ -501,9 +509,9 @@ public sealed class GameScannerService : IAsyncDisposable
                         apiSeen == 0
                             ? "Scan arrêté : Arcane Rush n'a pas utilisé le proxy Windows léger. Le fichier journal permet de basculer proprement sur la capture de secours."
                             : snap.Decks.Count >= AppConfig.ExpectedDeckCount && snap.PlayerNameConfidence < 75
-                                ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais le pseudo Arcane Rush n'est pas encore vérifié. Clique sur Rapport."
+                                ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais le pseudo Arcane Rush n'est pas encore vérifié. Clique sur Synchroniser pour réessayer."
                                 : snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe
-                                    ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais la collection n'a pas passé les garde-fous. Clique sur Rapport."
+                                    ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais la collection exacte n'a pas été reçue. Clique sur Synchroniser puis relance Arcane Rush."
                                     : $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks sûrs détectés. Aucun résultat partiel ne sera synchronisé.");
                     await StopAsync();
                     return;
@@ -606,16 +614,6 @@ public sealed class GameScannerService : IAsyncDisposable
         _snapshot.PlayerNameSource = string.IsNullOrWhiteSpace(probe.Evidence) ? source : probe.Evidence;
         AppLog.Info($"Player identity updated: '{previous}'({previousConfidence}) -> '{probe.AcceptedName}'({probe.Confidence}) via {_snapshot.PlayerNameSource}.");
         return true;
-    }
-
-    private void ScheduleStop()
-    {
-        // Never stop Titanium from inside one of its own callbacks.
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(150);
-            await StopAsync();
-        });
     }
 
     private static int DeckRank(DetectedDeck deck)
