@@ -354,7 +354,7 @@ public partial class MainWindow : Window
         _closeCleanupComplete = true;
         try
         {
-            Dispatcher.BeginInvoke(new Action(() =>
+            _ =             Dispatcher.BeginInvoke(new Action(() =>
             {
                 try { Close(); }
                 catch (Exception ex)
