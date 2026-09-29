@@ -3,6 +3,8 @@ name: Build Arcane Rush Sync
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'sync-v*'
 
