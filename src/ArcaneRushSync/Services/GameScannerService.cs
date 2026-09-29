@@ -22,6 +22,7 @@ public sealed class GameScannerService : IAsyncDisposable
     private long _apiRequestsSeen;
     private long _apiResponsesSeen;
     private long _candidateBodiesScanned;
+    private volatile bool _acceptGameTraffic = true;
 
     public event Action<GameSnapshot>? SnapshotChanged;
     public event Action<string>? StatusChanged;
@@ -68,38 +69,9 @@ public sealed class GameScannerService : IAsyncDisposable
         ProxyStateGuard.RestoreIfPending();
         _scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        lock (_gate)
-        {
-            _detector.ResetTransientScanState();
-            _snapshot.Decks.Clear();
-            _snapshot.OwnedCardIds = Array.Empty<string>();
-            _snapshot.CollectionSyncSafe = false;
-            _snapshot.CollectionConfidence = 0;
-            _snapshot.CollectionMethod = "";
-            _snapshot.CollectionAsciiCount = 0;
-            _snapshot.CollectionNoiseCount = 0;
-            _snapshot.CollectionNumericOnlyCount = 0;
-            _snapshot.CollectionUnresolvedRecords = 0;
-            _snapshot.CollectionCandidateRecords = 0;
-            _snapshot.CollectionNumericOnlyIds = Array.Empty<string>();
-            _snapshot.CollectionInferredIds = Array.Empty<string>();
-            _snapshot.CollectionNoiseIds = Array.Empty<string>();
-            _snapshot.CollectionRejectedNumericIds = Array.Empty<string>();
-            _snapshot.CollectionDeckRecoveredIds = Array.Empty<string>();
-            var local = PlayerLogReader.TryReadWithSource();
-            _snapshot.PlayerName = local.Name;
-            _snapshot.PlayerNameConfidence = string.IsNullOrWhiteSpace(local.Name) ? 0 : 55;
-            _snapshot.PlayerNameSource = string.IsNullOrWhiteSpace(local.Name) ? "" : local.Source;
-            if (!string.IsNullOrWhiteSpace(local.Name))
-                AppLog.Info($"Weak player-name fallback at scan start from {local.Source}: {local.Name}");
-            _snapshot.UpdatedAt = DateTimeOffset.UtcNow;
-            _seenApiPaths.Clear();
-            _trafficDiagnostics.Clear();
-            _apiRequestsSeen = 0;
-            _apiResponsesSeen = 0;
-            _candidateBodiesScanned = 0;
-        }
-        SnapshotChanged?.Invoke(Snapshot);
+        var gameProcessAtStart = GameLauncherService.TryGetRunningProcessId();
+        _acceptGameTraffic = !gameProcessAtStart.HasValue;
+        ResetDetectionState("scan-start");
 
         _proxy = CreateProxyServer();
         _endpoint = new ExplicitProxyEndPoint(IPAddress.Loopback, GetFreePort(), decryptSsl: true);
@@ -127,9 +99,11 @@ public sealed class GameScannerService : IAsyncDisposable
             _proxy.Start();
             _proxy.SetAsSystemProxy(_endpoint, ProxyProtocolType.AllHttp);
             _running = true;
-            AppLog.Info($"Scanner started on 127.0.0.1:{_endpoint.Port}; target host={AppConfig.ApiHost}.");
-            StatusChanged?.Invoke("Scan actif · lance Arcane Rush. Seul le domaine API du jeu est déchiffré.");
-            _ = Task.Run(() => WatchLoopAsync(_scanCts.Token), _scanCts.Token);
+            AppLog.Info($"Scanner started on 127.0.0.1:{_endpoint.Port}; target host={AppConfig.ApiHost}; gamePidAtStart={gameProcessAtStart?.ToString() ?? "none"}.");
+            StatusChanged?.Invoke(gameProcessAtStart.HasValue
+                ? "Scanner prêt ✓ · Arcane Rush est déjà ouvert. Ferme-le puis relance-le normalement : le scanner restera armé et récupérera la collection au prochain démarrage."
+                : "Scanner prêt ✓ · lance Arcane Rush normalement. La collection et les decks seront lus pendant le chargement du jeu.");
+            _ = Task.Run(() => WatchLoopAsync(_scanCts.Token, gameProcessAtStart), _scanCts.Token);
         }
         catch
         {
@@ -235,6 +209,7 @@ public sealed class GameScannerService : IAsyncDisposable
         {
             var uri = e.HttpClient.Request.RequestUri;
             if (!string.Equals(uri.Host, AppConfig.ApiHost, StringComparison.OrdinalIgnoreCase)) return;
+            if (!_acceptGameTraffic) return;
 
             var path = uri.AbsolutePath;
             var method = e.HttpClient.Request.Method ?? "";
@@ -297,6 +272,7 @@ public sealed class GameScannerService : IAsyncDisposable
         {
             var uri = e.HttpClient.Request.RequestUri;
             if (!string.Equals(uri.Host, AppConfig.ApiHost, StringComparison.OrdinalIgnoreCase)) return;
+            if (!_acceptGameTraffic) return;
 
             var path = uri.AbsolutePath;
             Interlocked.Increment(ref _apiResponsesSeen);
@@ -434,13 +410,15 @@ public sealed class GameScannerService : IAsyncDisposable
         }
     }
 
-    private async Task WatchLoopAsync(CancellationToken token)
+    private async Task WatchLoopAsync(CancellationToken token, int? gameProcessAtStart)
     {
-        DateTimeOffset? gameObservedAt = GameLauncherService.IsRunning()
-            ? DateTimeOffset.UtcNow
-            : null;
+        var waitingForRestart = gameProcessAtStart.HasValue;
+        var originalGameWasSeenClosed = !waitingForRestart;
+        int? activeGamePid = null;
+        DateTimeOffset? gameObservedAt = null;
         var warnedNoTraffic = false;
         var warnedTrafficNoDeck = false;
+        var restartPromptLogged = false;
 
         while (!token.IsCancellationRequested && _running)
         {
@@ -471,10 +449,98 @@ public sealed class GameScannerService : IAsyncDisposable
                 }
 
                 var now = DateTimeOffset.UtcNow;
-                if (gameObservedAt is null && GameLauncherService.IsRunning())
+                var currentPid = GameLauncherService.TryGetRunningProcessId();
+
+                if (waitingForRestart)
                 {
+                    if (currentPid == gameProcessAtStart)
+                    {
+                        if (!restartPromptLogged)
+                        {
+                            restartPromptLogged = true;
+                            AppLog.Info($"Scanner armed while existing Arcane Rush pid={gameProcessAtStart} is still open; waiting for a fresh game launch.");
+                            StatusChanged?.Invoke(
+                                "Arcane Rush était déjà ouvert avant le scan. Ferme-le puis relance-le normalement : aucune donnée partielle de cette ancienne session ne sera utilisée.");
+                        }
+
+                        try { await Task.Delay(250, token); } catch { return; }
+                        continue;
+                    }
+
+                    if (currentPid is null)
+                    {
+                        if (!originalGameWasSeenClosed)
+                        {
+                            originalGameWasSeenClosed = true;
+                            _acceptGameTraffic = false;
+                            ResetDetectionState("existing-game-closed");
+                            _acceptGameTraffic = true;
+                            AppLog.Info("Existing Arcane Rush instance closed; scanner is armed before the next launch.");
+                            StatusChanged?.Invoke("Arcane Rush fermé ✓ · scanner armé. Relance maintenant le jeu normalement.");
+                        }
+
+                        try { await Task.Delay(250, token); } catch { return; }
+                        continue;
+                    }
+
+                    // The PID changed so quickly that the poll may not have observed a gap.
+                    // Reset before accepting the new session to avoid mixing old-menu traffic
+                    // with the fresh bootstrap.
+                    if (!originalGameWasSeenClosed)
+                    {
+                        _acceptGameTraffic = false;
+                        ResetDetectionState("fast-game-restart");
+                        _acceptGameTraffic = true;
+                    }
+
+                    waitingForRestart = false;
+                    activeGamePid = currentPid;
                     gameObservedAt = now;
-                    AppLog.Info("Arcane Rush process detected after scanner start; scan timeout window begins now.");
+                    warnedNoTraffic = false;
+                    warnedTrafficNoDeck = false;
+                    AppLog.Info($"Fresh Arcane Rush launch detected pid={currentPid}; scan timeout window begins now.");
+                    StatusChanged?.Invoke("Nouveau lancement d’Arcane Rush détecté ✓ · lecture de la collection et des decks en cours…");
+                }
+                else if (activeGamePid is null)
+                {
+                    if (currentPid.HasValue)
+                    {
+                        activeGamePid = currentPid;
+                        gameObservedAt = now;
+                        warnedNoTraffic = false;
+                        warnedTrafficNoDeck = false;
+                        AppLog.Info($"Arcane Rush process detected pid={currentPid}; scan timeout window begins now.");
+                        StatusChanged?.Invoke("Arcane Rush détecté ✓ · lecture de la collection et des decks en cours…");
+                    }
+                }
+                else if (currentPid != activeGamePid)
+                {
+                    if (Snapshot.IsComplete(AppConfig.ExpectedDeckCount))
+                    {
+                        try { await Task.Delay(150, token); } catch { return; }
+                        continue;
+                    }
+
+                    _acceptGameTraffic = false;
+                    ResetDetectionState("game-session-changed");
+                    _acceptGameTraffic = true;
+                    activeGamePid = currentPid;
+                    gameObservedAt = currentPid.HasValue ? now : null;
+                    warnedNoTraffic = false;
+                    warnedTrafficNoDeck = false;
+
+                    if (currentPid.HasValue)
+                    {
+                        AppLog.Info($"Arcane Rush restarted with pid={currentPid}; starting a clean scan.");
+                        StatusChanged?.Invoke("Arcane Rush relancé ✓ · nouvelle lecture complète en cours…");
+                    }
+                    else
+                    {
+                        AppLog.Info("Arcane Rush closed before scan completion; scanner remains armed.");
+                        StatusChanged?.Invoke("Arcane Rush fermé avant la fin du scan · le scanner reste armé. Relance le jeu normalement.");
+                        try { await Task.Delay(250, token); } catch { return; }
+                        continue;
+                    }
                 }
 
                 var elapsed = gameObservedAt is null
@@ -483,19 +549,19 @@ public sealed class GameScannerService : IAsyncDisposable
                 var apiSeen = Interlocked.Read(ref _apiResponsesSeen);
                 var deckCount = Snapshot.Decks.Count;
 
-                if (!warnedNoTraffic && elapsed > TimeSpan.FromSeconds(18) && apiSeen == 0 && GameLauncherService.IsRunning())
+                if (!warnedNoTraffic && gameObservedAt is not null && elapsed > TimeSpan.FromSeconds(18) && apiSeen == 0)
                 {
                     warnedNoTraffic = true;
-                    AppLog.Warn("Arcane Rush is running but no target API response reached the lightweight Windows proxy after 18 seconds.");
-                    StatusChanged?.Invoke("Arcane Rush est ouvert, mais aucun trafic du jeu n'a encore atteint le scanner. Reste au menu quelques secondes ; si ça persiste, le journal permettra d'activer le mode de capture de secours.");
+                    AppLog.Warn("Arcane Rush is running after a fresh launch but no target API response reached the local scanner after 18 seconds.");
+                    StatusChanged?.Invoke("Arcane Rush est lancé, mais aucun trafic du jeu n’atteint encore le scanner. Attends quelques secondes ; si ça persiste, ferme puis relance le jeu une fois.");
                 }
-                else if (!warnedTrafficNoDeck && elapsed > TimeSpan.FromSeconds(30) && apiSeen > 0 && deckCount == 0)
+                else if (!warnedTrafficNoDeck && gameObservedAt is not null && elapsed > TimeSpan.FromSeconds(30) && apiSeen > 0 && deckCount == 0)
                 {
                     warnedTrafficNoDeck = true;
                     string paths;
                     lock (_gate) paths = string.Join(",", _seenApiPaths.OrderBy(x => x).Take(24));
-                    AppLog.Warn($"Game API traffic seen but no deck accepted after 30 seconds. paths={paths}");
-                    StatusChanged?.Invoke("Le jeu est bien détecté, mais aucun deck sûr n'a encore été validé. Laisse le menu chargé quelques secondes de plus.");
+                    AppLog.Warn($"Fresh game API traffic seen but no deck accepted after 30 seconds. paths={paths}");
+                    StatusChanged?.Invoke("Le nouveau lancement est bien capturé, mais aucun deck sûr n’a encore été validé. Laisse le menu finir de charger quelques secondes.");
                 }
 
                 if (gameObservedAt is not null && elapsed > TimeSpan.FromMinutes(2))
@@ -507,20 +573,64 @@ public sealed class GameScannerService : IAsyncDisposable
                     AppLog.Warn($"Scanner timeout. apiResponses={apiSeen}, decks={snap.Decks.Count}, missing={missing}, numericRefs={_detector.NumericReferenceCount}, name={(string.IsNullOrWhiteSpace(snap.PlayerName) ? "no" : $"{snap.PlayerName}/{snap.PlayerNameConfidence}")}, collection={snap.OwnedCardIds.Count}/{snap.CollectionConfidence}/safe={snap.CollectionSyncSafe}, paths={paths}");
                     StatusChanged?.Invoke(
                         apiSeen == 0
-                            ? "Scan arrêté : Arcane Rush n'a pas utilisé le proxy Windows léger. Le fichier journal permet de basculer proprement sur la capture de secours."
+                            ? "Scan arrêté : aucun trafic Arcane Rush n’a atteint le scanner après le nouveau lancement."
                             : snap.Decks.Count >= AppConfig.ExpectedDeckCount && snap.PlayerNameConfidence < 75
-                                ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais le pseudo Arcane Rush n'est pas encore vérifié. Clique sur Synchroniser pour réessayer."
+                                ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais le pseudo Arcane Rush n’est pas encore vérifié."
                                 : snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe
-                                    ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais la collection exacte n'a pas été reçue. Clique sur Synchroniser puis relance Arcane Rush."
-                                    : $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks sûrs détectés. Aucun résultat partiel ne sera synchronisé.");
+                                    ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais la collection exacte du démarrage n’a pas été reçue."
+                                    : $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks sûrs détectés.");
                     await StopAsync();
                     return;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Scanner watch loop warning: " + ex.Message);
+            }
 
             try { await Task.Delay(1000, token); } catch { return; }
         }
+    }
+
+    private void ResetDetectionState(string reason)
+    {
+        GameSnapshot snapshot;
+        lock (_gate)
+        {
+            _detector.ResetTransientScanState();
+            _snapshot.Decks.Clear();
+            _snapshot.OwnedCardIds = Array.Empty<string>();
+            _snapshot.CollectionSyncSafe = false;
+            _snapshot.CollectionConfidence = 0;
+            _snapshot.CollectionMethod = "";
+            _snapshot.CollectionAsciiCount = 0;
+            _snapshot.CollectionNoiseCount = 0;
+            _snapshot.CollectionNumericOnlyCount = 0;
+            _snapshot.CollectionUnresolvedRecords = 0;
+            _snapshot.CollectionCandidateRecords = 0;
+            _snapshot.CollectionNumericOnlyIds = Array.Empty<string>();
+            _snapshot.CollectionInferredIds = Array.Empty<string>();
+            _snapshot.CollectionNoiseIds = Array.Empty<string>();
+            _snapshot.CollectionRejectedNumericIds = Array.Empty<string>();
+            _snapshot.CollectionDeckRecoveredIds = Array.Empty<string>();
+
+            var local = PlayerLogReader.TryReadWithSource();
+            _snapshot.PlayerName = local.Name;
+            _snapshot.PlayerNameConfidence = string.IsNullOrWhiteSpace(local.Name) ? 0 : 55;
+            _snapshot.PlayerNameSource = string.IsNullOrWhiteSpace(local.Name) ? "" : local.Source;
+            _snapshot.UpdatedAt = DateTimeOffset.UtcNow;
+
+            _seenApiPaths.Clear();
+            _trafficDiagnostics.Clear();
+            _apiRequestsSeen = 0;
+            _apiResponsesSeen = 0;
+            _candidateBodiesScanned = 0;
+
+            snapshot = _snapshot.Clone();
+        }
+
+        AppLog.Info($"Detection state reset: {reason}.");
+        SnapshotChanged?.Invoke(snapshot);
     }
 
     private bool ReconcileCollectionWithDeckProofLocked()
