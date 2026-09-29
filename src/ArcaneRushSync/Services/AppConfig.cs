@@ -25,7 +25,6 @@ public static class AppConfig
 
     public const string UpdateAssetName = "ArcaneRushSync-win-x64.zip";
     public const string SiteUrl = "https://arcane-rush-compagnon-2026.web.app";
-    public const string SteamAppId = "3039040";
     public const string GameProcessName = "ArcaneRush";
     public const string ApiHost = "api-overhaul.cbg.alleylabs.com";
 
