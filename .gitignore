@@ -1,0 +1,22 @@
+# Builds / packages
+artifacts/
+bin/
+obj/
+.nuget/
+*.zip
+*.rar
+*.7z
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local diagnostics / generated reports
+STATIC_VALIDATION_REPORT.txt
+*.log
+
+# OS noise
+Thumbs.db
+.DS_Store

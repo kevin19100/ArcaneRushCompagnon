@@ -1,0 +1,18 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ArcaneRushSync", "src\ArcaneRushSync\ArcaneRushSync.csproj", "{7B3E0BB9-978C-4A4B-8EC5-7D273A15E3F0}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|x64 = Debug|x64
+        Release|x64 = Release|x64
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {7B3E0BB9-978C-4A4B-8EC5-7D273A15E3F0}.Debug|x64.ActiveCfg = Debug|Any CPU
+        {7B3E0BB9-978C-4A4B-8EC5-7D273A15E3F0}.Debug|x64.Build.0 = Debug|Any CPU
+        {7B3E0BB9-978C-4A4B-8EC5-7D273A15E3F0}.Release|x64.ActiveCfg = Release|Any CPU
+        {7B3E0BB9-978C-4A4B-8EC5-7D273A15E3F0}.Release|x64.Build.0 = Release|Any CPU
+    EndGlobalSection
+EndGlobal

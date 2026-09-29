@@ -1,0 +1,54 @@
+{
+  "SK_14": {
+    "name": "Xochi",
+    "faction": "Aztèque"
+  },
+  "SK_12": {
+    "name": "Gulfang Pansedor",
+    "faction": "Dragon"
+  },
+  "SK_5": {
+    "name": "Brimlet",
+    "faction": "Démon"
+  },
+  "SK_2": {
+    "name": "Roni Vaelor",
+    "faction": "Elfe"
+  },
+  "SK_15": {
+    "name": "Mimi Sprocket",
+    "faction": "Gnome"
+  },
+  "SK_4": {
+    "name": "Fiddle",
+    "faction": "Gobelin"
+  },
+  "SK_16": {
+    "name": "Mortimer",
+    "faction": "Mort-vivant"
+  },
+  "SK_10": {
+    "name": "Barmund",
+    "faction": "Nain"
+  },
+  "SK_7": {
+    "name": "Saya",
+    "faction": "Ninja"
+  },
+  "SK_8": {
+    "name": "Gorm",
+    "faction": "Nordique"
+  },
+  "SK_1": {
+    "name": "Thunk",
+    "faction": "Orc"
+  },
+  "SK_9": {
+    "name": "Captain Tuck",
+    "faction": "Pirate"
+  },
+  "SK_3": {
+    "name": "Jacques Grelot",
+    "faction": "Neutres"
+  }
+}

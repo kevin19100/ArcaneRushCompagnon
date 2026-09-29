@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>ArcaneRushSync</AssemblyName>
+    <RootNamespace>ArcaneRushSync</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\ArcaneRushSync.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <Product>Arcane Rush Sync</Product>
+    <Company>Arcane Rush Companion</Company>
+    <Description>Synchronisation locale du pseudo, de la collection et des decks Arcane Rush avec Arcane Rush Companion.</Description>
+    <Authors>Arcane Rush Companion</Authors>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Titanium.Web.Proxy" Version="7.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(GitHubRepository)' != ''">
+    <AssemblyMetadata Include="GitHubRepository" Value="$(GitHubRepository)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Background.png" />
+    <Resource Include="Assets\ArcaneRushSync.ico" />
+    <Content Include="Data\card_catalog.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Data\merchant_map.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Data\heroes.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>
