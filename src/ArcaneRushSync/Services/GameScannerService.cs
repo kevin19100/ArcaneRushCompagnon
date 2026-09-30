@@ -571,6 +571,7 @@ public sealed class GameScannerService : IAsyncDisposable
                         warnedTrafficNoDeck = false;
                         warnedInitialTimeout = false;
                         AppLog.Info($"New Arcane Rush process detected pid={currentPid}; keeping verified sync snapshot and refreshing live state.");
+                        continue;
                     }
 
                     _acceptGameTraffic = false;
@@ -636,7 +637,8 @@ public sealed class GameScannerService : IAsyncDisposable
                                 : snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe
                                     ? "13/13 decks détectés · collection exacte encore en attente. Le scanner reste actif."
                                     : $"Synchronisation initiale incomplète · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks. Le scanner reste actif.");
-                }            }
+                }
+            }
             catch (Exception ex)
             {
                 AppLog.Warn("Scanner watch loop warning: " + ex.Message);
