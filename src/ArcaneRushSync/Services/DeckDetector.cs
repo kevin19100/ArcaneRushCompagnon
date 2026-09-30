@@ -918,6 +918,167 @@ public sealed class DeckDetector
 
     private readonly record struct NumericFeature(string Path, int Field, ulong Value);
 
+    public LiveGameState? DetectLiveGameState(byte[] data, string path, string source)
+    {
+        if (data.Length == 0 || data.Length > AppConfig.MaxCapturedBodyBytes)
+            return null;
+
+        // These two endpoints are the proven live run-state carriers from the mature
+        // Companion. /112010 is the standard in-game state and /112003 is the
+        // standard-like/Gauntlet variant. No RNG or prediction data is read here.
+        if (!string.Equals(path, "/112010", StringComparison.Ordinal)
+            && !string.Equals(path, "/112003", StringComparison.Ordinal))
+            return null;
+
+        if (!TryParseProtobuf(data, out var root))
+            return null;
+
+        LiveContainerCandidate? best = null;
+        foreach (var node in Walk(root))
+        {
+            var poolChildren = node.Children
+                .Where(child => child.FieldNumber == 113)
+                .ToArray();
+            if (poolChildren.Length < 4)
+                continue;
+
+            var pools = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var poolNode in poolChildren)
+            {
+                // The live-state pool is one selected card for each of the twenty
+                // families. Require that exact structural signature before treating
+                // the node as a faction pool.
+                var direct = UniquePreserve(poolNode.DirectCards.Where(_validCards.Contains));
+                IReadOnlyList<string> cards = direct;
+                if (cards.Count != AppConfig.ExpectedCardsPerDeck)
+                    cards = UniquePreserve(DescendantCards(poolNode).Where(_validCards.Contains));
+
+                if (cards.Count != AppConfig.ExpectedCardsPerDeck
+                    || !TryStrictDeckSignature(cards, out var dealerId))
+                    continue;
+
+                if (!pools.ContainsKey(dealerId))
+                    pools[dealerId] = cards.ToArray();
+            }
+
+            var active = pools.Keys
+                .Where(id => !id.Equals("SK_3", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(id => MerchantSortKey(id))
+                .ToArray();
+
+            var hasNeutral = pools.ContainsKey("SK_3");
+            if (!hasNeutral || active.Length < 3 || pools.Count < 4)
+                continue;
+
+            var shopNode = node.Children.FirstOrDefault(child => child.FieldNumber == 8);
+            var shop = ReadRepeatedCardList(shopNode, entryField: 3);
+            var hand = ReadRepeatedCardList(
+                node.Children.FirstOrDefault(child => child.FieldNumber == 5),
+                entryField: 1);
+            var board = ReadRepeatedCardList(
+                node.Children.FirstOrDefault(child => child.FieldNumber == 6),
+                entryField: 1);
+
+            var tavernTier = 0;
+            if (shopNode is not null
+                && shopNode.DirectVarints.TryGetValue(1, out var tierValues))
+            {
+                tavernTier = tierValues
+                    .Select(value => value <= int.MaxValue ? (int)value : 0)
+                    .FirstOrDefault(value => value is >= 1 and <= 5);
+            }
+
+            var score = pools.Count * 100
+                + active.Length * 25
+                + (shop.Count > 0 ? 30 : 0)
+                + (tavernTier > 0 ? 10 : 0)
+                + Math.Min(20, hand.Count + board.Count);
+
+            var candidate = new LiveContainerCandidate(
+                score,
+                active.Take(3).ToArray(),
+                pools,
+                tavernTier,
+                shop,
+                hand,
+                board);
+
+            if (best is null || candidate.Score > best.Score)
+                best = candidate;
+        }
+
+        if (best is null)
+            return null;
+
+        var confidence = best.RunPools.Count >= 4 && best.Shop.Count > 0
+            ? 100
+            : 95;
+
+        return new LiveGameState
+        {
+            ActiveFactionDealers = best.ActiveFactionDealers,
+            NeutralDealer = "SK_3",
+            RunPools = best.RunPools,
+            TavernTier = best.TavernTier,
+            Shop = best.Shop,
+            Hand = best.Hand,
+            Board = best.Board,
+            SourcePath = path,
+            SourceKind = source,
+            Confidence = confidence,
+            CapturedAt = DateTimeOffset.UtcNow
+        };
+    }
+
+    private IReadOnlyList<string> ReadRepeatedCardList(ProtoNode? parent, int entryField)
+    {
+        if (parent is null)
+            return Array.Empty<string>();
+
+        var cards = new List<string>();
+        foreach (var entry in parent.Children.Where(child => child.FieldNumber == entryField))
+        {
+            var card = FirstExactCard(entry);
+            if (!string.IsNullOrWhiteSpace(card))
+                cards.Add(card);
+        }
+
+        return cards;
+    }
+
+    private string FirstExactCard(ProtoNode node)
+    {
+        foreach (var card in node.DirectCards)
+            if (_validCards.Contains(card))
+                return card;
+
+        foreach (var child in node.Children)
+        {
+            var nested = FirstExactCard(child);
+            if (!string.IsNullOrWhiteSpace(nested))
+                return nested;
+        }
+
+        return "";
+    }
+
+    private static int MerchantSortKey(string dealerId)
+    {
+        var parts = dealerId.Split('_');
+        return parts.Length >= 2 && int.TryParse(parts[1], out var value)
+            ? value
+            : int.MaxValue;
+    }
+
+    private sealed record LiveContainerCandidate(
+        int Score,
+        IReadOnlyList<string> ActiveFactionDealers,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> RunPools,
+        int TavernTier,
+        IReadOnlyList<string> Shop,
+        IReadOnlyList<string> Hand,
+        IReadOnlyList<string> Board);
+
     public IReadOnlyList<DetectedDeck> DetectDecks(byte[] data, string path)
     {
         if (data.Length == 0 || data.Length > AppConfig.MaxCapturedBodyBytes)
