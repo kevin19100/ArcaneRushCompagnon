@@ -20,6 +20,8 @@ public partial class GameOverlayWindow : Window
     private readonly CardCatalogService _catalog;
     private readonly DispatcherTimer _trackingTimer;
     private LiveGameState? _state;
+    private int _selectedTier;
+    private string _runSignature = "";
     private bool _collapsed;
     private bool _allowClose;
 
@@ -76,6 +78,17 @@ public partial class GameOverlayWindow : Window
         TrackGameWindow();
     }
 
+    private void TierButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button
+            || !int.TryParse(button.Tag?.ToString(), out var tier)
+            || tier is < 1 or > 5)
+            return;
+
+        _selectedTier = tier;
+        RenderState();
+    }
+
     private void TrackGameWindow()
     {
         if (!GameWindowLocator.TryGetBounds(out var game)
@@ -110,7 +123,7 @@ public partial class GameOverlayWindow : Window
         ShopPanel.Children.Clear();
         BoardPanel.Children.Clear();
         HandPanel.Children.Clear();
-        TavernGroupsPanel.Children.Clear();
+        TierCardsPanel.Children.Clear();
 
         if (_state is null)
         {
@@ -122,6 +135,8 @@ public partial class GameOverlayWindow : Window
             AddEmptyText(ShopPanel, "Boutique en attente");
             AddEmptyText(BoardPanel, "—");
             AddEmptyText(HandPanel, "—");
+            UpdateTierButtons();
+            AddEmptyText(TierCardsPanel, "Cartes de la partie en attente");
             return;
         }
 
@@ -150,12 +165,19 @@ public partial class GameOverlayWindow : Window
         if (state.Board.Count == 0) AddEmptyText(BoardPanel, "Vide");
         if (state.Hand.Count == 0) AddEmptyText(HandPanel, "Vide");
 
-        var tierGroups = _catalog.GroupByTavernTier(state.AllRunCards);
-        foreach (var group in tierGroups)
-            TavernGroupsPanel.Children.Add(CreateTavernGroup(group));
+        var signature = string.Join("|", state.ActiveFactionDealers.Append(state.NeutralDealer));
+        if (!string.Equals(signature, _runSignature, StringComparison.OrdinalIgnoreCase))
+        {
+            _runSignature = signature;
+            _selectedTier = state.TavernTier is >= 1 and <= 5 ? state.TavernTier : 1;
+        }
+        else if (_selectedTier is < 1 or > 5)
+        {
+            _selectedTier = state.TavernTier is >= 1 and <= 5 ? state.TavernTier : 1;
+        }
 
-        if (tierGroups.Count == 0)
-            AddEmptyText(TavernGroupsPanel, "Cartes de la partie en attente");
+        UpdateTierButtons();
+        RenderTierCards(state);
     }
 
     private UIElement CreateFactionBadge(FactionDisplayInfo faction, bool neutral)
@@ -188,29 +210,95 @@ public partial class GameOverlayWindow : Window
         };
     }
 
-    private UIElement CreateTavernGroup(TavernCardGroup group)
+    private void UpdateTierButtons()
+    {
+        foreach (var button in TierButtonPanel.Children.OfType<Button>())
+        {
+            var tier = int.TryParse(button.Tag?.ToString(), out var parsed) ? parsed : 0;
+            var selected = tier == _selectedTier;
+            var current = _state?.TavernTier == tier;
+
+            button.Background = new SolidColorBrush(selected
+                ? Color.FromArgb(72, 231, 198, 107)
+                : Color.FromArgb(26, 255, 255, 255));
+            button.BorderBrush = new SolidColorBrush(current
+                ? Color.FromRgb(231, 198, 107)
+                : Color.FromArgb(56, 255, 255, 255));
+            button.BorderThickness = new Thickness(current ? 2 : 1);
+            button.Foreground = new SolidColorBrush(selected
+                ? Color.FromRgb(255, 244, 210)
+                : Color.FromRgb(235, 232, 225));
+            button.ToolTip = current
+                ? $"Taverne {tier} · niveau actuel"
+                : $"Afficher les cartes de taverne {tier}";
+        }
+    }
+
+    private void RenderTierCards(LiveGameState state)
+    {
+        var dealerIds = state.ActiveFactionDealers
+            .Concat(new[] { state.NeutralDealer })
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var rendered = 0;
+        foreach (var dealerId in dealerIds)
+        {
+            if (!state.RunPools.TryGetValue(dealerId, out var pool))
+                continue;
+
+            var cards = _catalog.GetCards(pool)
+                .Where(card => card.TavernTier == _selectedTier)
+                .OrderBy(card => FamilyNumber(card.Id))
+                .ThenBy(card => card.Id, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (cards.Length == 0)
+                continue;
+
+            var faction = _catalog.TryGetFaction(dealerId);
+            TierCardsPanel.Children.Add(CreateFactionCardGroup(
+                faction?.Faction ?? dealerId,
+                faction?.DealerName ?? dealerId,
+                cards,
+                dealerId.Equals(state.NeutralDealer, StringComparison.OrdinalIgnoreCase)));
+            rendered += cards.Length;
+        }
+
+        if (rendered == 0)
+            AddEmptyText(TierCardsPanel, $"Aucune carte détectée pour la taverne {_selectedTier}");
+    }
+
+    private UIElement CreateFactionCardGroup(
+        string faction,
+        string dealerName,
+        IReadOnlyList<CardDisplayInfo> cards,
+        bool neutral)
     {
         var stack = new StackPanel();
-
         stack.Children.Add(new TextBlock
         {
-            Text = $"TAVERNE {group.Tier} · {group.Cards.Count} CARTES",
-            Foreground = new SolidColorBrush(Color.FromRgb(218, 215, 206)),
+            Text = $"{faction} · {dealerName} · {cards.Count} carte(s)",
+            Foreground = new SolidColorBrush(neutral
+                ? Color.FromRgb(196, 196, 191)
+                : Color.FromRgb(240, 226, 184)),
             FontWeight = FontWeights.SemiBold,
             FontSize = 10,
             Margin = new Thickness(1, 0, 0, 7)
         });
 
         var panel = new WrapPanel();
-        foreach (var card in group.Cards)
-            panel.Children.Add(CreateCardTile(card, 50, 71));
-
+        foreach (var card in cards)
+            panel.Children.Add(CreateCardTile(card, 58, 82));
         stack.Children.Add(panel);
 
         return new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(120, 34, 36, 41)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(34, 255, 255, 255)),
+            BorderBrush = new SolidColorBrush(neutral
+                ? Color.FromArgb(34, 255, 255, 255)
+                : Color.FromArgb(45, 231, 198, 107)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(9),
             Padding = new Thickness(9),
@@ -330,6 +418,14 @@ public partial class GameOverlayWindow : Window
                 Margin = new Thickness(4)
             }
         };
+
+    private static int FamilyNumber(string cardId)
+    {
+        var parts = (cardId ?? "").Split('_');
+        return parts.Length >= 4 && int.TryParse(parts[2], out var family)
+            ? family
+            : int.MaxValue;
+    }
 
     private static Brush RarityBrush(string rarity) =>
         (rarity ?? "").ToLowerInvariant() switch
