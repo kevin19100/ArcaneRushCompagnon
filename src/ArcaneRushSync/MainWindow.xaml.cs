@@ -343,8 +343,20 @@ public partial class MainWindow : Window
         if (_overlay is not null)
             return;
 
-        _overlay = new GameOverlayWindow();
-        _overlay.UpdateState(_scanner.LiveState);
+        try
+        {
+            var overlay = new GameOverlayWindow();
+            overlay.UpdateState(_scanner.LiveState);
+            _overlay = overlay;
+        }
+        catch (Exception ex)
+        {
+            // The overlay is optional UI. A malformed catalogue entry, image issue or
+            // Windows overlay quirk must never crash synchronization or leave the proxy
+            // in an unsafe state.
+            AppLog.Warn("Overlay initialization disabled for this session: " + ex.Message);
+            _overlay = null;
+        }
     }
 
     private void CloseOverlayWindow()
