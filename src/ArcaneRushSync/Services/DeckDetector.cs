@@ -464,44 +464,65 @@ public sealed class DeckDetector
         }
 
         var count = allAscii.Count;
-        bool syncSafe;
+
+        // IMPORTANT: density is a diagnostic, not an ownership gate.
+        //
+        // Field captures from the mature Companion and the 1.1.0 validation showed that
+        // /001003 can serialize the same legitimate collection with very different byte
+        // spacing between accounts. Requiring one dominant dense cluster therefore rejects
+        // valid players even though every retained ID is an exact, catalogue-valid SK_* value.
+        //
+        // The false positives seen in older builds came from NUMERIC reference recovery,
+        // not from these explicit SK_* strings. Numeric-only cards remain excluded here and
+        // may only be added later when an equipped deck independently proves ownership.
+        bool shapeLooksDense;
         if (count >= 80)
         {
             var outlierLimit = Math.Max(12, (int)Math.Ceiling(count * 0.05));
-            syncSafe = coverage >= 0.95 && outOfDense.Length <= outlierLimit;
+            shapeLooksDense = coverage >= 0.95 && outOfDense.Length <= outlierLimit;
         }
         else if (count >= 20)
         {
             var outlierLimit = Math.Max(6, (int)Math.Ceiling(count * 0.10));
-            syncSafe = coverage >= 0.90 && outOfDense.Length <= outlierLimit;
+            shapeLooksDense = coverage >= 0.90 && outOfDense.Length <= outlierLimit;
         }
         else
         {
-            syncSafe = coverage >= 0.85 && outOfDense.Length <= 3;
+            shapeLooksDense = coverage >= 0.85 && outOfDense.Length <= 3;
         }
 
-        var confidence = !syncSafe
-            ? 40
-            : coverage >= 0.995 && outOfDense.Length <= 2
+        var structuredCorroborated = structuredDiagnostic?.SyncSafe == true;
+        var confidence = shapeLooksDense
+            ? coverage >= 0.995 && outOfDense.Length <= 2
                 ? 100
                 : coverage >= 0.98
                     ? 99
-                    : 97;
+                    : 98
+            : structuredCorroborated
+                ? 98
+                : 96;
 
         var owned = allAscii
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        var method = shapeLooksDense
+            ? "bootstrap-exact-ascii"
+            : structuredCorroborated
+                ? "bootstrap-exact-ascii+structured-proof"
+                : "bootstrap-exact-ascii+fragmented";
+
         AppLog.Info(
-            $"Collection /001003 exact-ASCII: owned={owned.Length}, dense={denseSet.Count}, coverage={coverage:F4}, " +
+            $"Collection /001003 exact-ASCII accepted: owned={owned.Length}, dense={denseSet.Count}, coverage={coverage:F4}, " +
             $"outOfDense={outOfDense.Length}, rejectedNumeric={rejectedNumeric.Length}, " +
-            $"structuredCandidate={(structuredDiagnostic?.OwnedCardIds.Count ?? 0)}, safe={syncSafe}, confidence={confidence}.");
+            $"structuredCandidate={(structuredDiagnostic?.OwnedCardIds.Count ?? 0)}, structuredSafe={structuredCorroborated}, " +
+            $"shapeDense={shapeLooksDense}, confidence={confidence}, method={method}.");
 
         return new OwnedCollectionProbe(
-            syncSafe,
+            true,
             confidence,
-            syncSafe ? "bootstrap-exact-ascii" : "diagnostic-bootstrap-ascii-shape-unsafe",
+            method,
             owned,
             allAscii.Count,
             outOfDense.Length,
