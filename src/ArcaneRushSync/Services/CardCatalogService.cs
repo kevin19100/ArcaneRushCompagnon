@@ -67,8 +67,8 @@ public sealed class CardCatalogService
         {
             var dealerId = property.Name;
             var value = property.Value;
-            var name = value.TryGetProperty("name", out var nameNode) ? nameNode.GetString() ?? dealerId : dealerId;
-            var faction = value.TryGetProperty("faction", out var factionNode) ? factionNode.GetString() ?? dealerId : dealerId;
+            var name = ReadString(value, "name", dealerId);
+            var faction = ReadString(value, "faction", dealerId);
             _factions[dealerId] = new FactionDisplayInfo(dealerId, name, faction);
         }
     }
@@ -82,9 +82,7 @@ public sealed class CardCatalogService
 
         foreach (var dealer in dealers.EnumerateArray())
         {
-            var dealerId = dealer.TryGetProperty("dealerId", out var dealerIdNode)
-                ? dealerIdNode.GetString() ?? ""
-                : "";
+            var dealerId = ReadString(dealer, "dealerId", "");
             if (string.IsNullOrWhiteSpace(dealerId)) continue;
 
             var faction = TryGetFaction(dealerId)
@@ -102,15 +100,13 @@ public sealed class CardCatalogService
 
                 foreach (var variant in variants.EnumerateArray())
                 {
-                    var id = variant.TryGetProperty("id", out var idNode) ? idNode.GetString() ?? "" : "";
+                    var id = ReadString(variant, "id", "");
                     if (string.IsNullOrWhiteSpace(id)) continue;
 
-                    var name = variant.TryGetProperty("name", out var nameNode) ? nameNode.GetString() ?? id : id;
-                    var rarity = variant.TryGetProperty("rarity", out var rarityNode) ? rarityNode.GetString() ?? "" : "";
-                    var cost = variant.TryGetProperty("cost", out var costNode) && costNode.TryGetInt32(out var parsedCost)
-                        ? parsedCost
-                        : 0;
-                    var effect = variant.TryGetProperty("effect", out var effectNode) ? effectNode.GetString() ?? "" : "";
+                    var name = ReadString(variant, "name", id);
+                    var rarity = ReadString(variant, "rarity", "");
+                    var cost = ReadInt32(variant, "cost", 0);
+                    var effect = ReadString(variant, "effect", "");
 
                     var imageUrl = $"{AppConfig.SiteUrl.TrimEnd('/')}/cards/{Uri.EscapeDataString(id)}.png";
                     _cards[id] = new CardDisplayInfo(
@@ -127,6 +123,36 @@ public sealed class CardCatalogService
                 }
             }
         }
+    }
+
+    private static string ReadString(JsonElement owner, string property, string fallback)
+    {
+        if (!owner.TryGetProperty(property, out var node))
+            return fallback;
+
+        return node.ValueKind switch
+        {
+            JsonValueKind.String => node.GetString() ?? fallback,
+            JsonValueKind.Null or JsonValueKind.Undefined => fallback,
+            _ => node.ToString()
+        };
+    }
+
+    private static int ReadInt32(JsonElement owner, string property, int fallback)
+    {
+        if (!owner.TryGetProperty(property, out var node))
+            return fallback;
+
+        if (node.ValueKind == JsonValueKind.Number && node.TryGetInt32(out var number))
+            return number;
+
+        if (node.ValueKind == JsonValueKind.String
+            && int.TryParse(node.GetString(), out var parsed))
+            return parsed;
+
+        // Some catalogue entries legitimately have a null cost. That is display
+        // metadata only and must never be able to crash Arcane Rush Sync.
+        return fallback;
     }
 
     private static int FamilyNumber(string cardId)
