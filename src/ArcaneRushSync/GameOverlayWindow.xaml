@@ -118,10 +118,27 @@
 
                         <Border BorderBrush="#24FFFFFF" BorderThickness="0,1,0,0" Margin="0,0,0,12"/>
 
-                        <TextBlock Text="CARTES DE LA PARTIE · PAR NIVEAU DE TAVERNE"
+                        <TextBlock Text="MES CARTES · PAR NIVEAU DE TAVERNE"
                                    Style="{StaticResource SectionTitle}"
-                                   Margin="0,0,0,9"/>
-                        <StackPanel x:Name="TavernGroupsPanel"/>
+                                   Margin="0,0,0,7"/>
+
+                        <StackPanel x:Name="TierButtonPanel"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Center"
+                                    Margin="0,0,0,10">
+                            <Button Tag="1" Content="1" Width="42" Height="30" Margin="2"
+                                    Style="{StaticResource HeaderButton}" Click="TierButton_Click"/>
+                            <Button Tag="2" Content="2" Width="42" Height="30" Margin="2"
+                                    Style="{StaticResource HeaderButton}" Click="TierButton_Click"/>
+                            <Button Tag="3" Content="3" Width="42" Height="30" Margin="2"
+                                    Style="{StaticResource HeaderButton}" Click="TierButton_Click"/>
+                            <Button Tag="4" Content="4" Width="42" Height="30" Margin="2"
+                                    Style="{StaticResource HeaderButton}" Click="TierButton_Click"/>
+                            <Button Tag="5" Content="5" Width="42" Height="30" Margin="2"
+                                    Style="{StaticResource HeaderButton}" Click="TierButton_Click"/>
+                        </StackPanel>
+
+                        <StackPanel x:Name="TierCardsPanel"/>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>
