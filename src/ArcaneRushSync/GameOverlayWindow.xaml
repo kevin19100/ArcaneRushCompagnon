@@ -1,0 +1,130 @@
+<Window x:Class="ArcaneRushSync.GameOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Arcane Rush · Partie"
+        Width="470"
+        Height="760"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True">
+    <Window.Resources>
+        <SolidColorBrush x:Key="Gold" Color="#E7C66B"/>
+        <SolidColorBrush x:Key="Panel" Color="#F21A1B1F"/>
+        <SolidColorBrush x:Key="PanelSoft" Color="#E6222429"/>
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource Gold}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
+            <Setter Property="Margin" Value="0,0,0,7"/>
+        </Style>
+        <Style x:Key="HeaderButton" TargetType="Button">
+            <Setter Property="Foreground" Value="#F4F0E8"/>
+            <Setter Property="Background" Value="#1AFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#38FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="9,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="Shell"
+            CornerRadius="15"
+            Background="{StaticResource Panel}"
+            BorderBrush="#55E7C66B"
+            BorderThickness="1"
+            SnapsToDevicePixels="True">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="54"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" BorderBrush="#22FFFFFF" BorderThickness="0,0,0,1">
+                <Grid Margin="15,0,10,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="ARCANE RUSH · PARTIE"
+                                   Foreground="{StaticResource Gold}"
+                                   FontWeight="Bold"
+                                   FontSize="12"/>
+                        <TextBlock x:Name="HeaderStatusText"
+                                   Text="En attente de la partie…"
+                                   Foreground="#BFD7D5CF"
+                                   FontSize="10"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Background="#20E7C66B" CornerRadius="6" Padding="8,4" Margin="0,0,7,0">
+                            <TextBlock x:Name="HeaderTierText"
+                                       Text="Taverne —"
+                                       Foreground="#F3E8C4"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"/>
+                        </Border>
+                        <Button x:Name="CollapseButton"
+                                Style="{StaticResource HeaderButton}"
+                                Content="−"
+                                Click="CollapseButton_Click"
+                                ToolTip="Réduire l’affichage"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Grid x:Name="ExpandedBody" Grid.Row="1">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              Margin="14,12,8,12">
+                    <StackPanel Margin="0,0,6,0">
+                        <TextBlock x:Name="LiveStatusText"
+                                   Text="Le launcher est prêt. Les informations apparaîtront dès qu’une partie sera détectée."
+                                   Foreground="#C9CCC8C0"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Margin="1,0,1,13"/>
+
+                        <TextBlock Text="FACTIONS DE LA PARTIE" Style="{StaticResource SectionTitle}"/>
+                        <WrapPanel x:Name="FactionPanel" Margin="0,0,0,14"/>
+
+                        <TextBlock Text="BOUTIQUE ACTUELLE" Style="{StaticResource SectionTitle}"/>
+                        <WrapPanel x:Name="ShopPanel" Margin="0,0,0,15"/>
+
+                        <Grid Margin="0,0,0,14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="MES CARTES · PLATEAU" Style="{StaticResource SectionTitle}"/>
+                                <WrapPanel x:Name="BoardPanel"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="MES CARTES · MAIN" Style="{StaticResource SectionTitle}"/>
+                                <WrapPanel x:Name="HandPanel"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <Border BorderBrush="#24FFFFFF" BorderThickness="0,1,0,0" Margin="0,0,0,12"/>
+
+                        <TextBlock Text="CARTES DE LA PARTIE · PAR NIVEAU DE TAVERNE"
+                                   Style="{StaticResource SectionTitle}"
+                                   Margin="0,0,0,9"/>
+                        <StackPanel x:Name="TavernGroupsPanel"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
