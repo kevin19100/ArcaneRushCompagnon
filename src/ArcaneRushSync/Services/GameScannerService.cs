@@ -336,43 +336,56 @@ public sealed class GameScannerService : IAsyncDisposable
                 if (collectionEligiblePath)
                 {
                     var collection = _detector.DetectOwnedCollection(body, path);
-                    if (collection.SyncSafe
-                        && (collection.Confidence > _snapshot.CollectionConfidence
-                            || !_snapshot.CollectionSyncSafe
-                            || !_snapshot.OwnedCardIds.SequenceEqual(collection.OwnedCardIds, StringComparer.OrdinalIgnoreCase)))
+                    if (collection.SyncSafe)
                     {
-                        _snapshot.OwnedCardIds = collection.OwnedCardIds.ToArray();
+                        // /001003 may be emitted more than once during startup. Exact SK_* IDs
+                        // from this endpoint are authoritative, so never let a later/smaller
+                        // bootstrap response shrink a collection already observed in this scan.
+                        var mergedOwned = _snapshot.OwnedCardIds
+                            .Concat(collection.OwnedCardIds)
+                            .Where(id => !string.IsNullOrWhiteSpace(id))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+
+                        var collectionChanged = !_snapshot.OwnedCardIds.SequenceEqual(mergedOwned, StringComparer.OrdinalIgnoreCase)
+                            || !_snapshot.CollectionSyncSafe;
+
+                        _snapshot.OwnedCardIds = mergedOwned;
                         _snapshot.CollectionSyncSafe = true;
-                        _snapshot.CollectionConfidence = collection.Confidence;
-                        _snapshot.CollectionMethod = collection.Method;
-                        _snapshot.CollectionAsciiCount = collection.AsciiCount;
-                        _snapshot.CollectionNoiseCount = collection.NoiseCount;
-                        _snapshot.CollectionNumericOnlyCount = collection.NumericOnlyCount;
-                        _snapshot.CollectionUnresolvedRecords = collection.UnresolvedRecords;
-                        _snapshot.CollectionCandidateRecords = collection.CandidateRecords;
-                        _snapshot.CollectionNumericOnlyIds = collection.SafeNumericOnlyIds.ToArray();
-                        _snapshot.CollectionInferredIds = collection.SafeInferredIds.ToArray();
-                        _snapshot.CollectionNoiseIds = collection.SafeNoiseIds.ToArray();
-                        _snapshot.CollectionRejectedNumericIds = collection.SafeRejectedNumericIds.ToArray();
-                        _snapshot.CollectionDeckRecoveredIds = Array.Empty<string>();
-                        changed = true;
-                        AppLog.Info($"Owned collection accepted from {path}: count={collection.OwnedCardIds.Count}, confidence={collection.Confidence}, method={collection.Method}, ascii={collection.AsciiCount}, noise={collection.NoiseCount}, numericOnly={collection.NumericOnlyCount}, inferred={collection.SafeInferredIds.Count}, unresolved={collection.UnresolvedRecords}.");
+                        _snapshot.CollectionConfidence = Math.Max(_snapshot.CollectionConfidence, collection.Confidence);
+                        _snapshot.CollectionMethod = PreferCollectionMethod(_snapshot.CollectionMethod, collection.Method);
+                        _snapshot.CollectionAsciiCount = Math.Max(_snapshot.CollectionAsciiCount, mergedOwned.Length);
+                        _snapshot.CollectionNoiseCount = Math.Max(_snapshot.CollectionNoiseCount, collection.NoiseCount);
+                        _snapshot.CollectionNumericOnlyCount = Math.Max(_snapshot.CollectionNumericOnlyCount, collection.NumericOnlyCount);
+                        _snapshot.CollectionUnresolvedRecords = Math.Max(_snapshot.CollectionUnresolvedRecords, collection.UnresolvedRecords);
+                        _snapshot.CollectionCandidateRecords = Math.Max(_snapshot.CollectionCandidateRecords, collection.CandidateRecords);
+                        _snapshot.CollectionNumericOnlyIds = MergeIds(_snapshot.CollectionNumericOnlyIds, collection.SafeNumericOnlyIds);
+                        _snapshot.CollectionInferredIds = MergeIds(_snapshot.CollectionInferredIds, collection.SafeInferredIds);
+                        _snapshot.CollectionNoiseIds = MergeIds(_snapshot.CollectionNoiseIds, collection.SafeNoiseIds);
+                        _snapshot.CollectionRejectedNumericIds = MergeIds(_snapshot.CollectionRejectedNumericIds, collection.SafeRejectedNumericIds);
+
+                        if (collectionChanged)
+                        {
+                            changed = true;
+                            AppLog.Info($"Owned collection accepted/merged from {path}: count={mergedOwned.Length}, confidence={_snapshot.CollectionConfidence}, method={_snapshot.CollectionMethod}, ascii={_snapshot.CollectionAsciiCount}, fragmentedOutsideDense={_snapshot.CollectionNoiseCount}, rejectedNumeric={_snapshot.CollectionRejectedNumericIds.Count}.");
+                        }
                     }
-                    else if (!collection.SyncSafe)
+                    else
                     {
                         if (!_snapshot.CollectionSyncSafe)
                         {
-                            _snapshot.CollectionConfidence = collection.Confidence;
+                            _snapshot.CollectionConfidence = Math.Max(_snapshot.CollectionConfidence, collection.Confidence);
                             _snapshot.CollectionMethod = collection.Method;
-                            _snapshot.CollectionAsciiCount = collection.AsciiCount;
-                            _snapshot.CollectionNoiseCount = collection.NoiseCount;
-                            _snapshot.CollectionNumericOnlyCount = collection.NumericOnlyCount;
-                            _snapshot.CollectionUnresolvedRecords = collection.UnresolvedRecords;
-                            _snapshot.CollectionCandidateRecords = collection.CandidateRecords;
-                            _snapshot.CollectionNumericOnlyIds = collection.SafeNumericOnlyIds.ToArray();
-                            _snapshot.CollectionInferredIds = collection.SafeInferredIds.ToArray();
-                            _snapshot.CollectionNoiseIds = collection.SafeNoiseIds.ToArray();
-                            _snapshot.CollectionRejectedNumericIds = collection.SafeRejectedNumericIds.ToArray();
+                            _snapshot.CollectionAsciiCount = Math.Max(_snapshot.CollectionAsciiCount, collection.AsciiCount);
+                            _snapshot.CollectionNoiseCount = Math.Max(_snapshot.CollectionNoiseCount, collection.NoiseCount);
+                            _snapshot.CollectionNumericOnlyCount = Math.Max(_snapshot.CollectionNumericOnlyCount, collection.NumericOnlyCount);
+                            _snapshot.CollectionUnresolvedRecords = Math.Max(_snapshot.CollectionUnresolvedRecords, collection.UnresolvedRecords);
+                            _snapshot.CollectionCandidateRecords = Math.Max(_snapshot.CollectionCandidateRecords, collection.CandidateRecords);
+                            _snapshot.CollectionNumericOnlyIds = MergeIds(_snapshot.CollectionNumericOnlyIds, collection.SafeNumericOnlyIds);
+                            _snapshot.CollectionInferredIds = MergeIds(_snapshot.CollectionInferredIds, collection.SafeInferredIds);
+                            _snapshot.CollectionNoiseIds = MergeIds(_snapshot.CollectionNoiseIds, collection.SafeNoiseIds);
+                            _snapshot.CollectionRejectedNumericIds = MergeIds(_snapshot.CollectionRejectedNumericIds, collection.SafeRejectedNumericIds);
                         }
                         AppLog.Warn($"Owned collection not sync-safe from {path}: method={collection.Method}, ascii={collection.AsciiCount}, confidence={collection.Confidence}, noise={collection.NoiseCount}, rejectedNumeric={collection.SafeRejectedNumericIds.Count}.");
                     }
@@ -632,6 +645,31 @@ public sealed class GameScannerService : IAsyncDisposable
         AppLog.Info($"Detection state reset: {reason}.");
         SnapshotChanged?.Invoke(snapshot);
     }
+
+    private static string PreferCollectionMethod(string current, string incoming)
+    {
+        if (string.IsNullOrWhiteSpace(current) || !current.StartsWith("bootstrap-exact-ascii", StringComparison.Ordinal))
+            return incoming;
+
+        if (current.Contains("+deck-proof", StringComparison.Ordinal))
+            return current;
+
+        // Keep the most informative exact-bootstrap provenance if one response was fragmented.
+        if (incoming.Contains("+structured-proof", StringComparison.Ordinal))
+            return incoming;
+        if (current.Contains("+structured-proof", StringComparison.Ordinal))
+            return current;
+        if (incoming.Contains("+fragmented", StringComparison.Ordinal))
+            return incoming;
+        return current;
+    }
+
+    private static IReadOnlyList<string> MergeIds(IEnumerable<string> left, IEnumerable<string> right) =>
+        left.Concat(right)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     private bool ReconcileCollectionWithDeckProofLocked()
     {
