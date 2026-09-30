@@ -6,6 +6,7 @@ public sealed class LiveGameState
     public string NeutralDealer { get; init; } = "SK_3";
     public IReadOnlyDictionary<string, IReadOnlyList<string>> RunPools { get; init; } =
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+    public int TavernTier { get; init; }
     public IReadOnlyList<string> Shop { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> Hand { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> Board { get; init; } = Array.Empty<string>();
