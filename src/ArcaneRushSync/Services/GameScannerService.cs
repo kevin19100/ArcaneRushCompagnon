@@ -23,8 +23,10 @@ public sealed class GameScannerService : IAsyncDisposable
     private long _apiResponsesSeen;
     private long _candidateBodiesScanned;
     private volatile bool _acceptGameTraffic = true;
+    private LiveGameState? _liveState;
 
     public event Action<GameSnapshot>? SnapshotChanged;
+    public event Action<LiveGameState?>? LiveStateChanged;
     public event Action<string>? StatusChanged;
     public event Action? Stopped;
 
@@ -55,6 +57,11 @@ public sealed class GameScannerService : IAsyncDisposable
     public GameSnapshot Snapshot
     {
         get { lock (_gate) return _snapshot.Clone(); }
+    }
+
+    public LiveGameState? LiveState
+    {
+        get { lock (_gate) return _liveState; }
     }
 
     public async Task StartAsync(bool installCertificateIfNeeded, CancellationToken cancellationToken = default)
@@ -236,6 +243,10 @@ public sealed class GameScannerService : IAsyncDisposable
 
             if (body.Length == 0) return;
 
+            var requestLiveState = _detector.DetectLiveGameState(body, path, "request");
+            if (requestLiveState is not null && ApplyLiveState(requestLiveState))
+                LiveStateChanged?.Invoke(requestLiveState);
+
             string accepted = "";
             IReadOnlyList<string> candidates = Array.Empty<string>();
             lock (_gate)
@@ -285,13 +296,21 @@ public sealed class GameScannerService : IAsyncDisposable
             var needName = current.PlayerNameConfidence < 100 || string.Equals(path, "/001003", StringComparison.Ordinal);
             var deckEligiblePath = AppConfig.IsDeckEligibleEndpoint(path);
             var collectionEligiblePath = string.Equals(path, "/001003", StringComparison.Ordinal);
-            if (!needName && !deckEligiblePath && !collectionEligiblePath) return;
+            var liveEligiblePath = string.Equals(path, "/112010", StringComparison.Ordinal)
+                || string.Equals(path, "/112003", StringComparison.Ordinal);
+            if (!needName && !deckEligiblePath && !collectionEligiblePath && !liveEligiblePath) return;
 
             var body = await e.GetResponseBody();
             if (body.Length == 0 || body.Length > AppConfig.MaxCapturedBodyBytes) return;
             AddTrafficDiagnostic(ScannerDiagnosticExtractor.Build(
                 "response", e.HttpClient.Request.Method ?? "", path, e.HttpClient.Response.StatusCode, "", body));
             if (deckEligiblePath) Interlocked.Increment(ref _candidateBodiesScanned);
+
+            var responseLiveState = liveEligiblePath
+                ? _detector.DetectLiveGameState(body, path, "response")
+                : null;
+            if (responseLiveState is not null && ApplyLiveState(responseLiveState))
+                LiveStateChanged?.Invoke(responseLiveState);
 
             var changed = false;
             var acceptedDecks = new List<DetectedDeck>();
@@ -431,6 +450,7 @@ public sealed class GameScannerService : IAsyncDisposable
         DateTimeOffset? gameObservedAt = null;
         var warnedNoTraffic = false;
         var warnedTrafficNoDeck = false;
+        var warnedInitialTimeout = false;
         var restartPromptLogged = false;
 
         while (!token.IsCancellationRequested && _running)
@@ -511,6 +531,7 @@ public sealed class GameScannerService : IAsyncDisposable
                     gameObservedAt = now;
                     warnedNoTraffic = false;
                     warnedTrafficNoDeck = false;
+                    warnedInitialTimeout = false;
                     AppLog.Info($"Fresh Arcane Rush launch detected pid={currentPid}; scan timeout window begins now.");
                     StatusChanged?.Invoke("Nouveau lancement d’Arcane Rush détecté ✓ · lecture de la collection et des decks en cours…");
                 }
@@ -522,6 +543,7 @@ public sealed class GameScannerService : IAsyncDisposable
                         gameObservedAt = now;
                         warnedNoTraffic = false;
                         warnedTrafficNoDeck = false;
+                        warnedInitialTimeout = false;
                         AppLog.Info($"Arcane Rush process detected pid={currentPid}; scan timeout window begins now.");
                         StatusChanged?.Invoke("Arcane Rush détecté ✓ · lecture de la collection et des decks en cours…");
                     }
@@ -530,8 +552,25 @@ public sealed class GameScannerService : IAsyncDisposable
                 {
                     if (Snapshot.IsComplete(AppConfig.ExpectedDeckCount))
                     {
-                        try { await Task.Delay(150, token); } catch { return; }
-                        continue;
+                        if (currentPid is null)
+                        {
+                            ClearLiveState("game-closed");
+                            activeGamePid = null;
+                            gameObservedAt = null;
+                            StatusChanged?.Invoke("Arcane Rush fermé · synchronisation conservée, affichage en jeu masqué.");
+                            try { await Task.Delay(250, token); } catch { return; }
+                            continue;
+                        }
+
+                        // A new process started after a completed synchronization. Keep the
+                        // verified account snapshot, but clear the previous match overlay.
+                        ClearLiveState("new-game-process");
+                        activeGamePid = currentPid;
+                        gameObservedAt = now;
+                        warnedNoTraffic = false;
+                        warnedTrafficNoDeck = false;
+                        warnedInitialTimeout = false;
+                        AppLog.Info($"New Arcane Rush process detected pid={currentPid}; keeping verified sync snapshot and refreshing live state.");
                     }
 
                     _acceptGameTraffic = false;
@@ -541,6 +580,7 @@ public sealed class GameScannerService : IAsyncDisposable
                     gameObservedAt = currentPid.HasValue ? now : null;
                     warnedNoTraffic = false;
                     warnedTrafficNoDeck = false;
+                    warnedInitialTimeout = false;
 
                     if (currentPid.HasValue)
                     {
@@ -577,25 +617,26 @@ public sealed class GameScannerService : IAsyncDisposable
                     StatusChanged?.Invoke("Le nouveau lancement est bien capturé, mais aucun deck sûr n’a encore été validé. Laisse le menu finir de charger quelques secondes.");
                 }
 
-                if (gameObservedAt is not null && elapsed > TimeSpan.FromMinutes(2))
+                if (!warnedInitialTimeout
+                    && gameObservedAt is not null
+                    && elapsed > TimeSpan.FromMinutes(2)
+                    && !Snapshot.IsComplete(AppConfig.ExpectedDeckCount))
                 {
+                    warnedInitialTimeout = true;
                     var snap = Snapshot;
                     string paths;
                     lock (_gate) paths = string.Join(",", _seenApiPaths.OrderBy(x => x).Take(40));
                     var missing = string.Join(",", AppConfig.ExpectedMerchantIds.Where(id => !snap.Decks.ContainsKey(id)));
-                    AppLog.Warn($"Scanner timeout. apiResponses={apiSeen}, decks={snap.Decks.Count}, missing={missing}, numericRefs={_detector.NumericReferenceCount}, name={(string.IsNullOrWhiteSpace(snap.PlayerName) ? "no" : $"{snap.PlayerName}/{snap.PlayerNameConfidence}")}, collection={snap.OwnedCardIds.Count}/{snap.CollectionConfidence}/safe={snap.CollectionSyncSafe}, paths={paths}");
+                    AppLog.Warn($"Initial sync still incomplete after 2 minutes. Scanner remains active for live overlay. apiResponses={apiSeen}, decks={snap.Decks.Count}, missing={missing}, numericRefs={_detector.NumericReferenceCount}, name={(string.IsNullOrWhiteSpace(snap.PlayerName) ? "no" : $"{snap.PlayerName}/{snap.PlayerNameConfidence}")}, collection={snap.OwnedCardIds.Count}/{snap.CollectionConfidence}/safe={snap.CollectionSyncSafe}, paths={paths}");
                     StatusChanged?.Invoke(
                         apiSeen == 0
-                            ? "Scan arrêté : aucun trafic Arcane Rush n’a atteint le scanner après le nouveau lancement."
+                            ? "Synchronisation initiale incomplète après 2 minutes · le scanner reste actif pour l’affichage en jeu."
                             : snap.Decks.Count >= AppConfig.ExpectedDeckCount && snap.PlayerNameConfidence < 75
-                                ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais le pseudo Arcane Rush n’est pas encore vérifié."
+                                ? "13/13 decks détectés · pseudo encore en vérification. Le scanner reste actif."
                                 : snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe
-                                    ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais la collection exacte du démarrage n’a pas été reçue."
-                                    : $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks sûrs détectés.");
-                    await StopAsync();
-                    return;
-                }
-            }
+                                    ? "13/13 decks détectés · collection exacte encore en attente. Le scanner reste actif."
+                                    : $"Synchronisation initiale incomplète · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks. Le scanner reste actif.");
+                }            }
             catch (Exception ex)
             {
                 AppLog.Warn("Scanner watch loop warning: " + ex.Message);
@@ -638,12 +679,68 @@ public sealed class GameScannerService : IAsyncDisposable
             _apiRequestsSeen = 0;
             _apiResponsesSeen = 0;
             _candidateBodiesScanned = 0;
+            _liveState = null;
 
             snapshot = _snapshot.Clone();
         }
 
         AppLog.Info($"Detection state reset: {reason}.");
         SnapshotChanged?.Invoke(snapshot);
+        LiveStateChanged?.Invoke(null);
+    }
+
+    private void ClearLiveState(string reason)
+    {
+        var changed = false;
+        lock (_gate)
+        {
+            if (_liveState is not null)
+            {
+                _liveState = null;
+                changed = true;
+            }
+        }
+
+        if (!changed) return;
+        AppLog.Info($"Live state cleared: {reason}.");
+        LiveStateChanged?.Invoke(null);
+    }
+
+    private bool ApplyLiveState(LiveGameState state)
+    {
+        lock (_gate)
+        {
+            if (_liveState is not null && SameLiveState(_liveState, state))
+                return false;
+
+            _liveState = state;
+        }
+
+        AppLog.Info(
+            $"Live state updated from {state.SourceKind}:{state.SourcePath}: " +
+            $"factions={string.Join(",", state.ActiveFactionDealers)}, tier={state.TavernTier}, " +
+            $"shop={string.Join(",", state.Shop)}, hand={state.Hand.Count}, board={state.Board.Count}, pools={state.RunPools.Count}.");
+        return true;
+    }
+
+    private static bool SameLiveState(LiveGameState left, LiveGameState right)
+    {
+        if (left.TavernTier != right.TavernTier
+            || !left.ActiveFactionDealers.SequenceEqual(right.ActiveFactionDealers, StringComparer.OrdinalIgnoreCase)
+            || !left.Shop.SequenceEqual(right.Shop, StringComparer.OrdinalIgnoreCase)
+            || !left.Hand.SequenceEqual(right.Hand, StringComparer.OrdinalIgnoreCase)
+            || !left.Board.SequenceEqual(right.Board, StringComparer.OrdinalIgnoreCase)
+            || left.RunPools.Count != right.RunPools.Count)
+            return false;
+
+        foreach (var pair in left.RunPools)
+        {
+            if (!right.RunPools.TryGetValue(pair.Key, out var other)
+                || !pair.Value.SequenceEqual(other, StringComparer.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
     }
 
     private static string PreferCollectionMethod(string current, string incoming)
