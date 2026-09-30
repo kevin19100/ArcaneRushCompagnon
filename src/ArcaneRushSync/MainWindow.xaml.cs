@@ -19,8 +19,6 @@ public partial class MainWindow : Window
     private bool _closeCleanupComplete;
     private bool _syncRequested;
     private bool _syncInProgress;
-    private bool _backgroundScannerStarting;
-    private GameOverlayWindow? _overlay;
 
     internal bool IsClosingForShutdown => _closing;
 
@@ -34,11 +32,6 @@ public partial class MainWindow : Window
             UpdateSnapshotUi(snap);
             if (_syncRequested && !_syncInProgress && snap.IsComplete(AppConfig.ExpectedDeckCount))
                 _ = CompletePendingSyncAsync(snap);
-        });
-        _scanner.LiveStateChanged += state => QueueUi(() =>
-        {
-            EnsureOverlayWindow();
-            _overlay?.UpdateState(state);
         });
         _scanner.StatusChanged += text => QueueUi(() => SetStatus(text, "working"));
         _scanner.Stopped += () => QueueUi(OnScannerStopped);
@@ -102,7 +95,6 @@ public partial class MainWindow : Window
             var payload = await _updates.DownloadAndPrepareAsync(update, progress);
 
             UpdateButton.Content = "INSTALLATION…";
-            CloseOverlayWindow();
             await _scanner.StopAsync();
             ProxyStateGuard.RestoreIfPending();
 
@@ -185,8 +177,6 @@ public partial class MainWindow : Window
             _syncRequested = true;
             SetStatus("Préparation du scanner sécurisé…", "working");
             await _scanner.StartAsync(installCertificateIfNeeded: true);
-            EnsureOverlayWindow();
-            _overlay?.UpdateState(_scanner.LiveState);
 
             SyncSubText.Text = "Scanner actif · lance/re-lance Arcane Rush";
             if (GameLauncherService.IsRunning())
@@ -223,7 +213,7 @@ public partial class MainWindow : Window
             "• aucun droit administrateur\n" +
             "• seul api-overhaul.cbg.alleylabs.com est déchiffré\n" +
             "• aucun paquet brut n'est conservé sur le disque\n" +
-            "• le proxy Windows est restauré à la fermeture, déconnexion ou mise à jour du launcher\n" +
+            "• le proxy Windows est restauré après chaque scan\n" +
             "• le certificat est créé une seule fois puis réutilisé\n" +
             "• REPARER_RESEAU_WINDOWS.bat permet de le retirer manuellement\n\n" +
             "Autoriser ce scanner local ?",
@@ -247,13 +237,15 @@ public partial class MainWindow : Window
 
         try
         {
-            SetStatus("Données Arcane Rush complètes ✓ · synchronisation sécurisée avec le site…", "working");
+            SetStatus("Données Arcane Rush complètes ✓ · restauration du réseau…", "working");
+            await _scanner.StopAsync();
+
+            SetStatus("Synchronisation sécurisée avec le site…", "working");
             await _sync.SyncAsync(snapshot);
 
             success = true;
             SetStatus(
-                $"Synchronisé et vérifié ✓ · {snapshot.PlayerName} + {snapshot.OwnedCardIds.Count} cartes + 13 decks. " +
-                "Le scanner reste actif pendant que le launcher est ouvert pour l’affichage en jeu.",
+                $"Synchronisé et vérifié ✓ · {snapshot.PlayerName} + {snapshot.OwnedCardIds.Count} cartes + 13 decks.",
                 "ok");
         }
         catch (Exception ex)
@@ -284,7 +276,6 @@ public partial class MainWindow : Window
     private async void Logout_Click(object sender, RoutedEventArgs e)
     {
         _syncRequested = false;
-        CloseOverlayWindow();
         await _scanner.StopAsync();
         _auth.Logout();
         ShowLogin();
@@ -301,71 +292,6 @@ public partial class MainWindow : Window
         WelcomeText.Text = string.IsNullOrWhiteSpace(who) ? "Compte connecté" : $"Bonjour, {who}";
         UpdateSnapshotUi(_scanner.Snapshot);
         SetStatus("Clique sur « Synchroniser avec le site », puis lance Arcane Rush normalement.", "idle");
-
-        if (ScannerConsentStore.HasConsent)
-        {
-            EnsureOverlayWindow();
-            _ = EnsureBackgroundScannerAsync();
-        }
-    }
-
-    private async Task EnsureBackgroundScannerAsync()
-    {
-        if (_closing
-            || _updateStarting
-            || _auth.Session is null
-            || !ScannerConsentStore.HasConsent
-            || _scanner.IsRunning
-            || _backgroundScannerStarting)
-            return;
-
-        _backgroundScannerStarting = true;
-        try
-        {
-            await _scanner.StartAsync(installCertificateIfNeeded: true);
-            AppLog.Info("Background scanner armed for synchronization and live overlay.");
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("Background scanner could not be armed: " + ex.Message);
-        }
-        finally
-        {
-            _backgroundScannerStarting = false;
-        }
-    }
-
-    private void EnsureOverlayWindow()
-    {
-        if (_closing || _updateStarting || _auth.Session is null)
-            return;
-
-        if (_overlay is not null)
-            return;
-
-        try
-        {
-            var overlay = new GameOverlayWindow();
-            overlay.UpdateState(_scanner.LiveState);
-            _overlay = overlay;
-        }
-        catch (Exception ex)
-        {
-            // The overlay is optional UI. A malformed catalogue entry, image issue or
-            // Windows overlay quirk must never crash synchronization or leave the proxy
-            // in an unsafe state.
-            AppLog.Warn("Overlay initialization disabled for this session: " + ex.Message);
-            _overlay = null;
-        }
-    }
-
-    private void CloseOverlayWindow()
-    {
-        var overlay = _overlay;
-        _overlay = null;
-        if (overlay is null) return;
-        try { overlay.CloseForAppShutdown(); }
-        catch (Exception ex) { AppLog.Warn("Overlay close ignored: " + ex.Message); }
     }
 
     private void ShowLogin()
@@ -470,7 +396,6 @@ public partial class MainWindow : Window
         if (_closing) return;
 
         _closing = true;
-        CloseOverlayWindow();
         try
         {
             await _scanner.StopAsync();
@@ -487,7 +412,7 @@ public partial class MainWindow : Window
         _closeCleanupComplete = true;
         try
         {
-            _ = Dispatcher.BeginInvoke(new Action(() =>
+            _ =             Dispatcher.BeginInvoke(new Action(() =>
             {
                 try { Close(); }
                 catch (Exception ex)
