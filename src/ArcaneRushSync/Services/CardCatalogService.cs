@@ -52,8 +52,8 @@ public sealed class CardCatalogService
     public static int TavernTierForCardId(string cardId)
     {
         var family = FamilyNumber(cardId);
-        if (family is >= 1 and <= 4) return 1;
-        if (family is >= 5 and <= 7) return 2;
+        if (family is >= 1 and <= 3) return 1;
+        if (family is >= 4 and <= 7) return 2;
         if (family is >= 8 and <= 11) return 3;
         if (family is >= 12 and <= 15) return 4;
         if (family is >= 16 and <= 20) return 5;
