@@ -29,15 +29,16 @@ public static class NetworkRepairService
             restored = !File.Exists(AppPaths.ProxyBackup);
         }
 
-        // 2. No backup but Windows still points at a local loopback proxy: that can only be a
-        //    leftover of a crashed scan, so switch the proxy off.
+        // 2. No backup but Windows still points at a proxy written in the exact format
+        //    Titanium uses ("http=127.0.0.1:N;https=127.0.0.1:N"): leftover of a crashed scan.
+        //    Other local proxies (Clash, v2ray, Fiddler, VPN clients…) use other formats and are left alone.
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey, writable: true);
             if (key is not null
                 && key.GetValue("ProxyEnable") is int enabled && enabled == 1
                 && key.GetValue("ProxyServer") is string server
-                && (server.Contains("127.0.0.1", StringComparison.Ordinal) || server.Contains("localhost", StringComparison.OrdinalIgnoreCase))
+                && LooksLikeOurProxy(server)
                 && !GameScannerIsRunningInThisProcess)
             {
                 key.SetValue("ProxyEnable", 0, RegistryValueKind.DWord);
@@ -102,6 +103,23 @@ public static class NetworkRepairService
 
         AppLog.Info($"Network repair done. restored={restored}, disabled={disabled}, certificatesRemoved={removed}.");
         return new RepairResult(restored, disabled, removed);
+    }
+
+    private static bool LooksLikeOurProxy(string server)
+    {
+        // Titanium writes "http=HOST:PORT;https=HOST:PORT" (keeping any other protocol entries).
+        string? http = null, https = null;
+        foreach (var part in server.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var eq = part.IndexOf('=');
+            if (eq <= 0) continue;
+            var scheme = part[..eq].Trim().ToLowerInvariant();
+            var target = part[(eq + 1)..].Trim().ToLowerInvariant();
+            if (scheme == "http") http = target;
+            else if (scheme == "https") https = target;
+        }
+        if (http is null || https is null || http != https) return false;
+        return System.Text.RegularExpressions.Regex.IsMatch(http, @"^(127\.0\.0\.1|localhost):\d{2,5}$");
     }
 
     /// <summary>Set by the scanner while its proxy is live, so a repair never cuts an active scan.</summary>

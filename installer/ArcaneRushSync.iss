@@ -71,7 +71,10 @@ Filename: "{app}\ArcaneRushSync.exe"; Description: "{cm:LaunchProgram,Arcane Rus
 
 [UninstallRun]
 ; Restaure le proxy Windows et retire le certificat local avant de supprimer les fichiers.
-Filename: "{app}\ArcaneRushSync.exe"; Parameters: "--repair-network --quiet"; Flags: waituntilterminated skipifdoesntexist; RunOnceId: "ArcaneRushSyncRepair"
+; Désinstallation normale : Windows demande de confirmer le retrait du certificat (répondre Oui).
+Filename: "{app}\ArcaneRushSync.exe"; Parameters: "--repair-network --quiet"; Flags: waituntilterminated skipifdoesntexist; RunOnceId: "ArcaneRushSyncRepair"; Check: not UninstallSilent
+; Désinstallation silencieuse : aucune fenêtre ne doit bloquer, on restaure seulement le proxy.
+Filename: "{app}\ArcaneRushSync.exe"; Parameters: "--repair-network --quiet --keep-certificate"; Flags: waituntilterminated skipifdoesntexist; RunOnceId: "ArcaneRushSyncRepairSilent"; Check: UninstallSilent
 
 [UninstallDelete]
 ; Les mises à jour automatiques peuvent ajouter des fichiers inconnus de l'installeur.

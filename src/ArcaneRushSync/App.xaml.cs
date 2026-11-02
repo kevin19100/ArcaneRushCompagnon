@@ -20,7 +20,10 @@ public partial class App : Application
             // the local certificate without opening the main window.
             var quiet = e.Args.Any(a => string.Equals(a, "--quiet", StringComparison.OrdinalIgnoreCase));
             AppPaths.EnsureDirectories();
-            var result = NetworkRepairService.Repair(removeCertificates: true);
+            // --keep-certificate: silent uninstall, where Windows' root-store removal prompt could
+            // block unseen. The proxy is still restored.
+            var keepCertificate = e.Args.Any(a => string.Equals(a, "--keep-certificate", StringComparison.OrdinalIgnoreCase));
+            var result = NetworkRepairService.Repair(removeCertificates: !keepCertificate);
             if (!quiet)
             {
                 MessageBox.Show(

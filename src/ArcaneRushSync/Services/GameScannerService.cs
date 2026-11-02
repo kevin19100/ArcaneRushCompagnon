@@ -440,11 +440,22 @@ public sealed class GameScannerService : IAsyncDisposable
         var warnedNoTraffic = false;
         var warnedTrafficNoDeck = false;
         var restartPromptLogged = false;
+        var armedAt = DateTimeOffset.UtcNow;
 
         while (!token.IsCancellationRequested && _running)
         {
             try
             {
+                // Never leave the Windows proxy armed forever when the game never (re)starts:
+                // Steam login screen, game not installed, launch cancelled, game refusing to close…
+                if (gameObservedAt is null && DateTimeOffset.UtcNow - armedAt > AppConfig.ArmedWithoutGameTimeout)
+                {
+                    AppLog.Warn("Scanner armed but no fresh Arcane Rush launch was observed; stopping and restoring the proxy.");
+                    StatusChanged?.Invoke("Arcane Rush n’a pas démarré dans les 5 minutes · scanner arrêté et réseau Windows restauré. Clique à nouveau quand tu es prêt.");
+                    await StopAsync();
+                    return;
+                }
+
                 var local = PlayerLogReader.TryReadWithSource();
                 if (!string.IsNullOrWhiteSpace(local.Name))
                 {

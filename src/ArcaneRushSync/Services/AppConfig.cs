@@ -83,6 +83,9 @@ public static class AppConfig
 
     // When the exact collection is known but some decks are still missing, wait this long
     // without any new detection before syncing what we have (players may not own every merchant).
+    // Scanner armed but the game never (re)started: give up and restore the proxy.
+    public static readonly TimeSpan ArmedWithoutGameTimeout = TimeSpan.FromMinutes(5);
+
     public static readonly TimeSpan PartialSyncQuietPeriod = TimeSpan.FromSeconds(25);
     public const int ExpectedCardsPerDeck = 20;
     public const int MaxCapturedBodyBytes = 4 * 1024 * 1024;

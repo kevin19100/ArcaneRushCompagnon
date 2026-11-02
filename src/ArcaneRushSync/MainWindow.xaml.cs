@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private bool _closeCleanupComplete;
     private bool _syncRequested;
     private bool _syncInProgress;
+    private bool _lastSyncFailed;
     private readonly System.Windows.Threading.DispatcherTimer _syncTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
     internal bool IsClosingForShutdown => _closing;
@@ -156,7 +157,28 @@ public partial class MainWindow : Window
 
     private async void Sync_Click(object sender, RoutedEventArgs e)
     {
-        if (_auth.Session is null || _syncInProgress || _syncRequested) return;
+        if (_auth.Session is null || _syncInProgress) return;
+
+        if (_syncRequested)
+        {
+            // While armed, the main button cancels: scanner stopped, Windows proxy restored.
+            _syncRequested = false;
+            _syncTimer.Stop();
+            await _scanner.StopAsync();
+            SetStatus("Synchronisation annulée · réseau Windows restauré.", "idle");
+            UpdateSnapshotUi(_scanner.Snapshot);
+            return;
+        }
+
+        var held = _scanner.Snapshot;
+        if (_lastSyncFailed && held.IsCollectionReady && !_scanner.IsRunning)
+        {
+            // The game data was read but the upload failed (network not back yet, session…):
+            // retry the upload without relaunching the game.
+            _syncRequested = true;
+            await CompletePendingSyncAsync(held);
+            return;
+        }
 
         SyncButton.IsEnabled = false;
         try
@@ -185,14 +207,18 @@ public partial class MainWindow : Window
             }
 
             _syncRequested = true;
+            _lastSyncFailed = false;
             SetStatus("Préparation du scanner local…", "working");
             await _scanner.StartAsync(installCertificateIfNeeded: true);
             _syncTimer.Start();
+            SyncButton.IsEnabled = true; // from now on the button cancels
+            if (!_syncRequested || _closing) return;
 
             if (GameLauncherService.IsRunning())
             {
                 SetStatus("Fermeture d’Arcane Rush…", "working");
                 var closed = await GameLauncherService.TryCloseRunningGameAsync(TimeSpan.FromSeconds(20));
+                if (!_syncRequested || _closing) return;
                 if (!closed)
                 {
                     SetStatus("Arcane Rush ne s’est pas fermé tout seul. Ferme-le, puis relance-le : le scanner reste armé.", "working");
@@ -200,6 +226,7 @@ public partial class MainWindow : Window
                     return;
                 }
                 await Task.Delay(1500);
+                if (!_syncRequested || _closing) return;
             }
 
             var launch = GameLauncherService.Launch();
@@ -290,6 +317,7 @@ public partial class MainWindow : Window
             await _sync.SyncAsync(snapshot);
 
             success = true;
+            _lastSyncFailed = false;
             var who = snapshot.HasVerifiedPlayerName ? snapshot.PlayerName + " · " : "";
             SetStatus(
                 $"Synchronisé et vérifié ✓ · {who}{snapshot.OwnedCardIds.Count} cartes + {snapshot.ValidDecks.Count()} decks. Ta collection est à jour sur le site.",
@@ -297,7 +325,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus(ex.Message, "error");
+            _lastSyncFailed = true;
+            SetStatus(ex.Message + " · Clique à nouveau pour renvoyer la collection lue.", "error");
         }
         finally
         {
@@ -414,20 +443,22 @@ public partial class MainWindow : Window
 
         if (_syncRequested)
         {
-            SyncButton.IsEnabled = false;
+            SyncButton.IsEnabled = true; // click = cancel
             if (complete)
                 SyncSubText.Text = "Données complètes · synchronisation…";
             else if (snap.IsCollectionReady)
                 SyncSubText.Text = $"{snap.OwnedCardIds.Count} cartes ✓ · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks · finalisation…";
             else
-                SyncSubText.Text = $"Lecture en cours · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks";
+                SyncSubText.Text = $"Lecture en cours · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks · cliquer pour annuler";
             return;
         }
 
         SyncButton.IsEnabled = _auth.Session is not null;
-        SyncSubText.Text = snap.IsCollectionReady
-            ? $"Dernière lecture : {snap.OwnedCardIds.Count} cartes · {snap.Decks.Count} decks"
-            : "Démarre le jeu et envoie ta collection au site";
+        SyncSubText.Text = _lastSyncFailed && snap.IsCollectionReady
+            ? $"{snap.OwnedCardIds.Count} cartes lues · cliquer pour renvoyer au site"
+            : snap.IsCollectionReady
+                ? $"Dernière lecture : {snap.OwnedCardIds.Count} cartes · {snap.Decks.Count} decks"
+                : "Démarre le jeu et envoie ta collection au site";
     }
 
     private void SetLoginBusy(bool busy, string status)
