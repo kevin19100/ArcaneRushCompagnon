@@ -44,14 +44,29 @@ public sealed class GameSnapshot
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    public bool IsComplete(int expectedDecks = 13) =>
-        !string.IsNullOrWhiteSpace(PlayerName)
-        && PlayerNameConfidence >= 75
-        && Decks.Count >= expectedDecks
-        && Decks.Values.All(d => d.CardIds.Count == 20)
-        && CollectionSyncSafe
+    // Moment where the last deck / collection change was observed. The UI waits for
+    // a short quiet period after this before syncing a partial deck set.
+    public DateTimeOffset LastDetectionChangeAt { get; set; } = DateTimeOffset.MinValue;
+
+    public bool HasVerifiedPlayerName =>
+        !string.IsNullOrWhiteSpace(PlayerName) && PlayerNameConfidence >= 75;
+
+    // The exact owned-card inventory from the /001003 bootstrap is the only thing
+    // strictly required to update "Ma collection" on the website.
+    public bool IsCollectionReady =>
+        CollectionSyncSafe
         && CollectionMethod.StartsWith("bootstrap-exact-ascii", StringComparison.Ordinal)
         && OwnedCardIds.Count > 0;
+
+    public IEnumerable<DetectedDeck> ValidDecks =>
+        Decks.Values.Where(d => d.CardIds.Count == 20);
+
+    // Everything the game can give us: verified name, exact collection and one deck
+    // per merchant listed in merchant_map.json.
+    public bool IsComplete(int expectedDecks) =>
+        HasVerifiedPlayerName
+        && IsCollectionReady
+        && ValidDecks.Count() >= expectedDecks;
 
     public GameSnapshot Clone()
     {
@@ -74,6 +89,7 @@ public sealed class GameSnapshot
             CollectionNoiseIds = CollectionNoiseIds.ToArray(),
             CollectionRejectedNumericIds = CollectionRejectedNumericIds.ToArray(),
             CollectionDeckRecoveredIds = CollectionDeckRecoveredIds.ToArray(),
+            LastDetectionChangeAt = LastDetectionChangeAt,
             UpdatedAt = UpdatedAt
         };
         foreach (var pair in Decks)

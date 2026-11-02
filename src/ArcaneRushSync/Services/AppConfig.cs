@@ -7,7 +7,7 @@ public static class AppConfig
         get
         {
             var v = typeof(AppConfig).Assembly.GetName().Version;
-            return v is null ? "1.1.0" : $"{v.Major}.{v.Minor}.{Math.Max(0, v.Build)}";
+            return v is null ? "1.2.0" : $"{v.Major}.{v.Minor}.{Math.Max(0, v.Build)}";
         }
     }
 
@@ -72,10 +72,18 @@ public static class AppConfig
     public static readonly string[] ExpectedMerchantIds =
     {
         "SK_1", "SK_2", "SK_3", "SK_4", "SK_5", "SK_7", "SK_8",
-        "SK_9", "SK_10", "SK_12", "SK_14", "SK_15", "SK_16"
+        "SK_9", "SK_10", "SK_12", "SK_14", "SK_15", "SK_16", "SK_17"
     };
 
-    public const int ExpectedDeckCount = 13;
+    // One equipped deck per merchant (14 since the Arcanist merchant SK_17 / Elyra).
+    public static int ExpectedDeckCount => ExpectedMerchantIds.Length;
+
+    // Arcane Rush on Steam (Gear Games). Used by the "launch the game" button.
+    public const string SteamAppId = "3039040";
+
+    // When the exact collection is known but some decks are still missing, wait this long
+    // without any new detection before syncing what we have (players may not own every merchant).
+    public static readonly TimeSpan PartialSyncQuietPeriod = TimeSpan.FromSeconds(25);
     public const int ExpectedCardsPerDeck = 20;
     public const int MaxCapturedBodyBytes = 4 * 1024 * 1024;
     public const int GenericDeckConfidence = 90;

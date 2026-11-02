@@ -14,6 +14,27 @@ public partial class App : Application
         if (TryHandleUpdateMode(e.Args))
             return;
 
+        if (e.Args.Any(a => string.Equals(a, "--repair-network", StringComparison.OrdinalIgnoreCase)))
+        {
+            // Used by the uninstaller and by support: restore Windows proxy settings and remove
+            // the local certificate without opening the main window.
+            var quiet = e.Args.Any(a => string.Equals(a, "--quiet", StringComparison.OrdinalIgnoreCase));
+            AppPaths.EnsureDirectories();
+            var result = NetworkRepairService.Repair(removeCertificates: true);
+            if (!quiet)
+            {
+                MessageBox.Show(
+                    "Réparation terminée.\n\n" +
+                    $"• Proxy Windows : {(result.ProxyRestored || result.ProxyDisabled ? "restauré" : "déjà normal")}\n" +
+                    $"• Certificats locaux retirés : {result.CertificatesRemoved}",
+                    "Arcane Rush Sync",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            Shutdown(0);
+            return;
+        }
+
         _singleInstance = new Mutex(
             initiallyOwned: true,
             name: @"Local\ArcaneRushSync.Singleton.v1",

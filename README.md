@@ -1,70 +1,86 @@
 # Arcane Rush Sync
 
-Application Windows WPF qui détecte le pseudo, la collection et les 13 decks Arcane Rush puis les synchronise avec Arcane Rush Companion.
+Application Windows (WPF, .NET 10) qui lance Arcane Rush, lit pendant le chargement du jeu
+ta **collection** (et tes decks équipés, et ton pseudo) puis les enregistre sur ton compte
+du site [Arcane Rush Companion](https://arcane-rush-compagnon-2026.web.app).
 
-Cette archive est la base de développement Windows/GitHub. Elle ne contient aucun composant Microsoft Store/MSIX.
+## Utilisation (joueur)
 
-## Lancer l'addon depuis les sources
+1. Télécharger **`ArcaneRushSync-Setup.exe`** depuis la page *Télécharger* du site
+   (ou `releases/latest`). L'installation se fait dans ton profil Windows, sans droits administrateur.
+2. Ouvrir Arcane Rush Sync et se connecter avec **le même compte que sur le site** (e-mail ou Google).
+3. Cliquer **« Lancer Arcane Rush et synchroniser »** :
+   * le scanner local s'arme, puis le jeu est lancé via Steam (ou directement si Steam est introuvable) ;
+   * si le jeu était déjà ouvert, Sync propose de le fermer et de le relancer (la collection n'est envoyée
+     par le serveur du jeu qu'au démarrage) ;
+   * dès que la collection exacte est lue, le proxy Windows est restauré et la page *Ma collection*
+     du site se met à jour toute seule.
+4. En cas de souci réseau : bouton **« Réparer le réseau »** (ou `ArcaneRushSync.exe --repair-network`).
+   La désinstallation fait la même réparation automatiquement.
 
-1. Sous Windows, double-cliquer sur `BUILD_TEST_WINDOWS.bat`.
-2. Le script vérifie la présence du SDK .NET 10 et propose son installation s'il manque.
-3. Il compile une version Windows x64 autonome dans `artifacts\win-x64`.
-4. Quand le dossier s'ouvre, lancer `ArcaneRushSync.exe`.
+## Ce qui est écrit sur le compte (`users/{uid}` dans Firestore)
 
-Après une modification du code, relancer `BUILD_TEST_WINDOWS.bat` avant de tester la nouvelle version.
+| Champ | Contenu |
+|---|---|
+| `ownedIds` | toutes les cartes `SK_x_y_z` possédées (bootstrap `/001003`) |
+| `collectionSyncSource` | `arcane-rush-addon` → le site considère la collection comme confirmée par le jeu |
+| `equippedCardIdsByDealer.SK_n` / `equippedDecks.SK_n` | 20 cartes par marchand détecté (chaque marchand est écrit séparément : un scan partiel n'efface jamais un deck déjà connu) |
+| `gamePlayerName` | pseudo, seulement s'il est vérifié |
 
-## Mise à jour automatique GitHub
+Les 14 marchands, Arcanistes (`SK_17`, Elyra) compris, sont reconnus. Les données de cartes
+(`src/ArcaneRushSync/Data`) sont celles du site (`public/data/cards.json`, `heroes.json`) :
+après un `UPDATE_CARDS` du site, recopier ces deux fichiers ici puis publier une version.
 
-L'addon vérifie au démarrage la dernière **GitHub Release** du dépôt depuis lequel il a été compilé. Si la Release possède une version supérieure à celle installée et contient exactement le fichier :
+## Antivirus et SmartScreen
 
-`ArcaneRushSync-win-x64.zip`
+Ce qui a été fait pour limiter les alertes :
 
-un bouton **MAJ DISPONIBLE** apparaît en haut de l'addon.
+* **installeur par utilisateur** (Inno Setup) : SmartScreen ne contrôle qu'un fichier au lieu de
+  chaque DLL extraite d'un ZIP « provenant d'Internet », et l'application vit dans
+  `%LOCALAPPDATA%\Programs\ArcaneRushSync` au lieu de Téléchargements/Temp ;
+* plus aucun `.bat` / PowerShell `-ExecutionPolicy Bypass` distribué : la réparation réseau est intégrée à l'EXE ;
+* aucun droit administrateur, aucun pilote, aucune injection dans le jeu, aucune lecture mémoire ;
+* le proxy n'est actif que pendant le chargement du jeu, et seul `api-overhaul.cbg.alleylabs.com` est déchiffré ;
+* métadonnées de version complètes, `SHA256SUMS.txt` publié avec chaque release ;
+* signature de code prête dans le workflow (voir ci-dessous).
 
-Au clic, l'addon :
+Ce qui reste hors de portée du code : un EXE **non signé** affichera « Éditeur inconnu » tant qu'il n'a
+pas de signature ou de réputation SmartScreen. Si un antivirus le détecte, soumettre le fichier
+comme faux positif : <https://www.microsoft.com/wdsi/filesubmission> (Defender) et le portail de l'éditeur concerné.
 
-1. télécharge le ZIP depuis GitHub ;
-2. vérifie le SHA-256 fourni par GitHub lorsqu'il est disponible ;
-3. prépare la nouvelle version dans `%LOCALAPPDATA%\ArcaneRushSync\updates` ;
-4. ferme proprement le scanner et restaure le proxy Windows ;
-5. remplace les fichiers de l'ancienne version ;
-6. relance automatiquement Arcane Rush Sync ;
-7. nettoie les fichiers temporaires de mise à jour.
+### Activer la signature (optionnel)
 
-La session Firebase, le consentement scanner, le certificat local et les données utilisateur restent dans `%LOCALAPPDATA%\ArcaneRushSync` et ne sont donc pas supprimés par une mise à jour.
+Le workflow signe l'EXE, la DLL et le Setup avec **Azure Artifact Signing** si la variable de dépôt
+`SIGNING_ENABLED=true` existe, avec :
 
-### Publier une nouvelle version
+* variables : `SIGNING_ENDPOINT` (ex. `https://weu.codesigning.azure.net`), `SIGNING_ACCOUNT`, `SIGNING_PROFILE` ;
+* secrets : `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`.
 
-Une fois le projet placé dans ton dépôt GitHub, tu n'as pas besoin d'écrire l'adresse du dépôt dans le code : GitHub Actions l'intègre automatiquement dans l'EXE.
+Sans ces réglages les étapes de signature sont simplement ignorées.
 
-Pour publier par exemple la version `1.2.0` :
+## Développement
+
+* `BUILD_TEST_WINDOWS.bat` : compile une version de test dans `artifacts\win-x64`.
+* `installer/ArcaneRushSync.iss` : script de l'installeur.
+* `.github/workflows/build-windows.yml` : build + Setup + ZIP + checksums ; Release automatique sur un tag `sync-vX.Y.Z`.
+
+### Publier une version
 
 ```powershell
-git add .
-git commit -m "Arcane Rush Sync 1.2.0"
-git push
 git tag sync-v1.2.0
 git push origin sync-v1.2.0
 ```
 
-Le workflow GitHub compile alors la version `1.2.0`, crée `ArcaneRushSync-win-x64.zip` et crée automatiquement la Release correspondante. Les utilisateurs en `1.1.0` verront ensuite **MAJ DISPONIBLE** au prochain lancement de l'addon.
-
-Important : un simple fichier ZIP poussé dans les sources du dépôt n'est pas considéré comme une mise à jour. Il faut une **Release GitHub publiée**. Le workflow fourni s'en charge automatiquement lors d'un tag `sync-vX.Y.Z`.
+La Release contient `ArcaneRushSync-Setup.exe` (première installation),
+`ArcaneRushSync-win-x64.zip` (utilisé par le bouton **MAJ DISPONIBLE** des versions déjà installées)
+et `SHA256SUMS.txt`. Le nom `ArcaneRushSync-win-x64.zip` ne doit pas changer : les versions 1.1.x le cherchent.
 
 ## Structure
 
-- `src/ArcaneRushSync/` : application et code source.
-- `BUILD_TEST_WINDOWS.bat` : compilation Windows en un double-clic.
-- `tools/build-test-windows.ps1` : script de publication appelé par le BAT.
-- `REPARER_RESEAU_WINDOWS.bat` : restauration réseau de secours.
-- `tools/recover-network.ps1` : logique de réparation réseau.
-- `ArcaneRushSync.sln` : solution Visual Studio.
-- `NuGet.Config` : source NuGet utilisée pour restaurer les dépendances.
-- `.github/workflows/build-windows.yml` : build + génération de Release lors d'un tag GitHub.
-- `LICENSE-THIRD-PARTY.md` : licences des dépendances tierces.
-
-## Scanner local
-
-Le scanner fonctionne sans droits administrateur applicatifs, conserve son certificat TLS local dans le magasin `CurrentUser`, restaure les paramètres proxy après le scan et protège la session Firebase avec Windows DPAPI.
-
-`REPARER_RESEAU_WINDOWS.bat` est prévu uniquement comme outil de secours pour restaurer le réseau et retirer le certificat local Arcane Rush Sync.
+- `src/ArcaneRushSync/` : application.
+- `src/ArcaneRushSync/Services/GameScannerService.cs` : relais local (Titanium.Web.Proxy) limité au domaine du jeu.
+- `src/ArcaneRushSync/Services/DeckDetector.cs` : extraction collection / decks / pseudo.
+- `src/ArcaneRushSync/Services/FirestoreSyncService.cs` : écriture vérifiée sur Firestore.
+- `src/ArcaneRushSync/Services/GameLauncherService.cs` : lancement via Steam (`steam://rungameid/3039040`).
+- `src/ArcaneRushSync/Services/NetworkRepairService.cs` : restauration proxy + retrait du certificat local.
+- `LICENSE-THIRD-PARTY.md` : licences des dépendances.

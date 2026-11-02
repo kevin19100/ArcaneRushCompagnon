@@ -98,11 +98,12 @@ public sealed class GameScannerService : IAsyncDisposable
         {
             _proxy.Start();
             _proxy.SetAsSystemProxy(_endpoint, ProxyProtocolType.AllHttp);
+            NetworkRepairService.GameScannerIsRunningInThisProcess = true;
             _running = true;
             AppLog.Info($"Scanner started on 127.0.0.1:{_endpoint.Port}; target host={AppConfig.ApiHost}; gamePidAtStart={gameProcessAtStart?.ToString() ?? "none"}.");
             StatusChanged?.Invoke(gameProcessAtStart.HasValue
                 ? "Scanner prêt ✓ · Arcane Rush est déjà ouvert. Ferme-le puis relance-le normalement : le scanner restera armé et récupérera la collection au prochain démarrage."
-                : "Scanner prêt ✓ · lance Arcane Rush normalement. La collection et les decks seront lus pendant le chargement du jeu.");
+                : "Scanner prêt ✓ · en attente du lancement d’Arcane Rush. La collection et les decks seront lus pendant le chargement du jeu.");
             _ = Task.Run(() => WatchLoopAsync(_scanCts.Token, gameProcessAtStart), _scanCts.Token);
         }
         catch
@@ -132,6 +133,7 @@ public sealed class GameScannerService : IAsyncDisposable
             // for the values we touched.
             try { _proxy?.Stop(); } catch (Exception ex) { AppLog.Warn("Proxy stop failed: " + ex.Message); }
             ProxyStateGuard.RestoreIfPending();
+            NetworkRepairService.GameScannerIsRunningInThisProcess = false;
 
             try
             {
@@ -154,8 +156,10 @@ public sealed class GameScannerService : IAsyncDisposable
             var final = Snapshot;
             AppLog.Info($"Scanner stopped. apiRequests={_apiRequestsSeen}, apiResponses={_apiResponsesSeen}, candidateBodies={_candidateBodiesScanned}, decks={final.Decks.Count}, collection={final.OwnedCardIds.Count}/safe={final.CollectionSyncSafe}, player={final.PlayerName}/{final.PlayerNameConfidence}, numericRefs={_detector.NumericReferenceCount}.");
             StatusChanged?.Invoke(final.IsComplete(AppConfig.ExpectedDeckCount)
-                ? $"Scan terminé ✓ · {final.PlayerName} + {final.OwnedCardIds.Count} cartes + 13 decks · réseau Windows restauré."
-                : "Scan arrêté · réseau Windows restauré. Le certificat local dédié reste approuvé pour les prochains scans.");
+                ? $"Scan terminé ✓ · {final.PlayerName} + {final.OwnedCardIds.Count} cartes + {final.Decks.Count} decks · réseau Windows restauré."
+                : final.IsCollectionReady
+                    ? $"Scan terminé ✓ · {final.OwnedCardIds.Count} cartes + {final.Decks.Count}/{AppConfig.ExpectedDeckCount} decks · réseau Windows restauré."
+                    : "Scan arrêté · réseau Windows restauré. Le certificat local dédié reste approuvé pour les prochains scans.");
             Stopped?.Invoke();
             await Task.CompletedTask;
         }
@@ -404,7 +408,11 @@ public sealed class GameScannerService : IAsyncDisposable
                 if (ReconcileCollectionWithDeckProofLocked())
                     changed = true;
 
-                if (changed) _snapshot.UpdatedAt = DateTimeOffset.UtcNow;
+                if (changed)
+                {
+                    _snapshot.UpdatedAt = DateTimeOffset.UtcNow;
+                    _snapshot.LastDetectionChangeAt = _snapshot.UpdatedAt;
+                }
             }
 
             foreach (var deck in acceptedDecks)
@@ -528,7 +536,10 @@ public sealed class GameScannerService : IAsyncDisposable
                 }
                 else if (currentPid != activeGamePid)
                 {
-                    if (Snapshot.IsComplete(AppConfig.ExpectedDeckCount))
+                    // Never throw away an exact collection already captured for this session:
+                    // the UI will sync it (with the decks found so far) after a short quiet period.
+                    var held = Snapshot;
+                    if (held.IsComplete(AppConfig.ExpectedDeckCount) || held.IsCollectionReady)
                     {
                         try { await Task.Delay(150, token); } catch { return; }
                         continue;
@@ -588,9 +599,9 @@ public sealed class GameScannerService : IAsyncDisposable
                         apiSeen == 0
                             ? "Scan arrêté : aucun trafic Arcane Rush n’a atteint le scanner après le nouveau lancement."
                             : snap.Decks.Count >= AppConfig.ExpectedDeckCount && snap.PlayerNameConfidence < 75
-                                ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais le pseudo Arcane Rush n’est pas encore vérifié."
+                                ? $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks détectés, mais le pseudo Arcane Rush n’est pas encore vérifié."
                                 : snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe
-                                    ? "Scan arrêté après 2 minutes · 13/13 decks détectés, mais la collection exacte du démarrage n’a pas été reçue."
+                                    ? $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks détectés, mais la collection exacte du démarrage n’a pas été reçue."
                                     : $"Scan arrêté après 2 minutes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks sûrs détectés.");
                     await StopAsync();
                     return;
@@ -632,6 +643,7 @@ public sealed class GameScannerService : IAsyncDisposable
             _snapshot.PlayerNameConfidence = string.IsNullOrWhiteSpace(local.Name) ? 0 : 55;
             _snapshot.PlayerNameSource = string.IsNullOrWhiteSpace(local.Name) ? "" : local.Source;
             _snapshot.UpdatedAt = DateTimeOffset.UtcNow;
+            _snapshot.LastDetectionChangeAt = DateTimeOffset.MinValue;
 
             _seenApiPaths.Clear();
             _trafficDiagnostics.Clear();
@@ -738,11 +750,11 @@ public sealed class GameScannerService : IAsyncDisposable
     private static string StatusForSnapshot(GameSnapshot snap)
     {
         if (snap.IsComplete(AppConfig.ExpectedDeckCount))
-            return $"Scan terminé ✓ · {snap.PlayerName} + 13 decks + {snap.OwnedCardIds.Count} cartes détectées.";
+            return $"Scan terminé ✓ · {snap.PlayerName} + {snap.Decks.Count} decks + {snap.OwnedCardIds.Count} cartes détectées.";
         if (snap.Decks.Count >= AppConfig.ExpectedDeckCount && snap.CollectionSyncSafe && snap.PlayerNameConfidence < 75)
-            return $"13/13 decks + {snap.OwnedCardIds.Count} cartes ✓ · recherche du pseudo Arcane Rush en cours…";
+            return $"{snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks + {snap.OwnedCardIds.Count} cartes ✓ · recherche du pseudo Arcane Rush en cours…";
         if (snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe)
-            return "13/13 decks détectés ✓ · lecture sécurisée de la collection en cours…";
+            return $"{snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks détectés ✓ · lecture sécurisée de la collection en cours…";
         if (snap.PlayerNameConfidence >= 75)
             return $"Pseudo {snap.PlayerName} détecté ✓ · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks · {snap.OwnedCardIds.Count} cartes.";
         return $"Scan en cours · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks · {snap.OwnedCardIds.Count} cartes · pseudo en recherche.";

@@ -35,26 +35,42 @@ public sealed class FirestoreSyncService : IDisposable
 
     public async Task SyncAsync(GameSnapshot snapshot, CancellationToken cancellationToken = default)
     {
-        var fieldsAttempted = new[]
-        {
-            "gamePlayerName",
-            "ownedIds", "collectionSchemaVersion", "collectionUpdatedAt", "collectionSyncSource", "collectionSyncClientVersion",
-            "equippedDecks", "deckSyncSchemaVersion", "deckSyncSource", "deckSyncClientVersion", "deckSyncUpdatedAt"
-        };
+        var validDecks = snapshot.ValidDecks
+            .Where(deck => System.Text.RegularExpressions.Regex.IsMatch(deck.MerchantId, "^SK_[0-9]+$", RegexOptions.IgnoreCase))
+            .OrderBy(deck => deck.MerchantId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var sendName = snapshot.HasVerifiedPlayerName;
 
-        if (!snapshot.IsComplete(AppConfig.ExpectedDeckCount))
+        var fieldsAttempted = new List<string>
+        {
+            "ownedIds", "collectionSchemaVersion", "collectionUpdatedAt", "collectionSyncSource",
+            "collectionSyncClient", "collectionSyncClientVersion"
+        };
+        if (sendName) fieldsAttempted.Insert(0, "gamePlayerName");
+        if (validDecks.Length > 0)
+        {
+            fieldsAttempted.AddRange(new[] { "deckSyncSchemaVersion", "deckSyncSource", "deckSyncClientVersion", "deckSyncUpdatedAt" });
+            foreach (var deck in validDecks)
+            {
+                fieldsAttempted.Add("equippedDecks." + deck.MerchantId.ToUpperInvariant());
+                fieldsAttempted.Add("equippedCardIdsByDealer." + deck.MerchantId.ToUpperInvariant());
+            }
+        }
+        var fieldsArray = fieldsAttempted.ToArray();
+
+        if (!snapshot.IsCollectionReady)
         {
             var blocker = SyncBlocker(snapshot);
-            SetDiagnostic(new(DateTimeOffset.UtcNow, false, false, 0, "Synchronisation bloquée : " + blocker, "", fieldsAttempted,
+            SetDiagnostic(new(DateTimeOffset.UtcNow, false, false, 0, "Synchronisation bloquée : " + blocker, "", fieldsArray,
                 snapshot.OwnedCardIds.Count, 0, false, ""));
-            throw new InvalidOperationException("Le scan n'est pas complet : pseudo vérifié + collection sûre + 13 decks de 20 cartes sont requis avant la synchronisation.");
+            throw new InvalidOperationException("La collection exacte du jeu n'a pas encore été lue. Relance Arcane Rush depuis Arcane Rush Sync pour réessayer.");
         }
 
         var session = await _auth.EnsureSessionAsync(cancellationToken);
         var projectId = _auth.ProjectId;
         if (string.IsNullOrWhiteSpace(projectId))
         {
-            SetDiagnostic(new(DateTimeOffset.UtcNow, false, false, 0, "Projet Firebase introuvable.", "", fieldsAttempted,
+            SetDiagnostic(new(DateTimeOffset.UtcNow, false, false, 0, "Projet Firebase introuvable.", "", fieldsArray,
                 snapshot.OwnedCardIds.Count, 0, false, ""));
             throw new InvalidOperationException("Projet Firebase introuvable.");
         }
@@ -66,19 +82,14 @@ public sealed class FirestoreSyncService : IDisposable
             .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        if (owned.Length == 0
-            || !snapshot.CollectionSyncSafe
-            || !snapshot.CollectionMethod.StartsWith("bootstrap-exact-ascii", StringComparison.Ordinal))
-            throw new InvalidOperationException("La collection exacte du jeu n'a pas été validée depuis le bootstrap /001003. Synchronisation annulée.");
-
         var deckFields = new Dictionary<string, object?>();
-        foreach (var pair in snapshot.Decks.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+        foreach (var deck in validDecks)
         {
-            deckFields[pair.Key] = new
+            deckFields[deck.MerchantId.ToUpperInvariant()] = new
             {
                 arrayValue = new
                 {
-                    values = pair.Value.CardIds.Select(id => new { stringValue = id }).ToArray()
+                    values = deck.CardIds.Select(id => new { stringValue = id.ToUpperInvariant() }).ToArray()
                 }
             };
         }
@@ -86,7 +97,6 @@ public sealed class FirestoreSyncService : IDisposable
         var now = DateTimeOffset.UtcNow.ToString("O");
         var fields = new Dictionary<string, object?>
         {
-            ["gamePlayerName"] = new { stringValue = snapshot.PlayerName },
             ["ownedIds"] = new
             {
                 arrayValue = new
@@ -96,16 +106,28 @@ public sealed class FirestoreSyncService : IDisposable
             },
             ["collectionSchemaVersion"] = new { integerValue = "1" },
             ["collectionUpdatedAt"] = new { timestampValue = now },
-            ["collectionSyncSource"] = new { stringValue = "arcane-rush-sync" },
-            ["collectionSyncClientVersion"] = new { stringValue = AppConfig.Version },
-            ["equippedDecks"] = new { mapValue = new { fields = deckFields } },
-            ["deckSyncSchemaVersion"] = new { integerValue = "1" },
-            ["deckSyncSource"] = new { stringValue = "arcane-rush-sync" },
-            ["deckSyncClientVersion"] = new { stringValue = AppConfig.Version },
-            ["deckSyncUpdatedAt"] = new { timestampValue = now }
+            // The website (src/cloud.jsx) treats exactly this value as "confirmed by the game":
+            // it then replaces the local collection instead of merging an old browser cache.
+            ["collectionSyncSource"] = new { stringValue = "arcane-rush-addon" },
+            ["collectionSyncClient"] = new { stringValue = "arcane-rush-sync" },
+            ["collectionSyncClientVersion"] = new { stringValue = AppConfig.Version }
         };
+        if (sendName)
+            fields["gamePlayerName"] = new { stringValue = snapshot.PlayerName };
+        if (validDecks.Length > 0)
+        {
+            // Two shapes: equippedDecks (historical) and equippedCardIdsByDealer, the one the
+            // website's Collection page actually reads. Each merchant is masked individually so a
+            // partial scan never erases a deck that was synced earlier.
+            fields["equippedDecks"] = new { mapValue = new { fields = deckFields } };
+            fields["equippedCardIdsByDealer"] = new { mapValue = new { fields = deckFields } };
+            fields["deckSyncSchemaVersion"] = new { integerValue = "1" };
+            fields["deckSyncSource"] = new { stringValue = "arcane-rush-addon" };
+            fields["deckSyncClientVersion"] = new { stringValue = AppConfig.Version };
+            fields["deckSyncUpdatedAt"] = new { timestampValue = now };
+        }
 
-        var masks = string.Join("&", fields.Keys.Select(k => "updateMask.fieldPaths=" + Uri.EscapeDataString(k)));
+        var masks = string.Join("&", fieldsArray.Select(k => "updateMask.fieldPaths=" + Uri.EscapeDataString(k)));
         var url = $"https://firestore.googleapis.com/v1/projects/{Uri.EscapeDataString(projectId)}/databases/(default)/documents/users/{Uri.EscapeDataString(session.Uid)}?{masks}";
         using var request = new HttpRequestMessage(HttpMethod.Patch, url)
         {
@@ -121,7 +143,7 @@ public sealed class FirestoreSyncService : IDisposable
             if (!response.IsSuccessStatusCode)
             {
                 SetDiagnostic(new(DateTimeOffset.UtcNow, true, false, (int)response.StatusCode,
-                    $"Firebase a refusé la synchronisation ({(int)response.StatusCode}).", preview, fieldsAttempted,
+                    $"Firebase a refusé la synchronisation ({(int)response.StatusCode}).", preview, fieldsArray,
                     owned.Length, 0, false, ""));
                 AppLog.Warn($"Firestore sync failed {(int)response.StatusCode}: {preview[..Math.Min(preview.Length, 300)]}");
                 throw new InvalidOperationException($"Synchronisation refusée par Firebase ({(int)response.StatusCode}). Vérifie les règles Firestore du site.");
@@ -132,7 +154,7 @@ public sealed class FirestoreSyncService : IDisposable
             var sentSet = owned.ToHashSet(StringComparer.OrdinalIgnoreCase);
             var returnedSet = returnedOwned.ToHashSet(StringComparer.OrdinalIgnoreCase);
             var collectionVerified = sentSet.SetEquals(returnedSet);
-            var nameVerified = string.Equals(returnedName, snapshot.PlayerName, StringComparison.Ordinal);
+            var nameVerified = !sendName || string.Equals(returnedName, snapshot.PlayerName, StringComparison.Ordinal);
             var verified = collectionVerified && nameVerified;
 
             if (!verified)
@@ -141,25 +163,25 @@ public sealed class FirestoreSyncService : IDisposable
                     ? $"Firebase a répondu 200 mais ownedIds ne correspond pas à la collection envoyée ({returnedOwned.Count}/{owned.Length})."
                     : $"Firebase a répondu 200 mais le pseudo retourné est '{returnedName}' au lieu de '{snapshot.PlayerName}'.";
                 SetDiagnostic(new(DateTimeOffset.UtcNow, true, false, (int)response.StatusCode,
-                    why, preview, fieldsAttempted, owned.Length, returnedOwned.Count, false, returnedName));
+                    why, preview, fieldsArray, owned.Length, returnedOwned.Count, false, returnedName));
                 AppLog.Warn("Firestore post-write verification failed: " + why);
                 throw new InvalidOperationException("Firebase a accepté la requête, mais la vérification après écriture a échoué. Aucun faux message « synchronisé » n'est affiché.");
             }
 
             SetDiagnostic(new(DateTimeOffset.UtcNow, true, true, (int)response.StatusCode,
-                $"Synchronisation Firestore vérifiée : {owned.Length} cartes + 13 decks + pseudo.", preview, fieldsAttempted,
+                $"Synchronisation Firestore vérifiée : {owned.Length} cartes + {validDecks.Length} decks" + (sendName ? " + pseudo." : "."), preview, fieldsArray,
                 owned.Length, returnedOwned.Count, true, returnedName));
             AppLog.Info($"Firestore sync verified. player={returnedName}, ownedIds={returnedOwned.Count}, decks={snapshot.Decks.Count}.");
         }
         catch (OperationCanceledException)
         {
-            SetDiagnostic(new(DateTimeOffset.UtcNow, true, false, 0, "Synchronisation annulée ou délai dépassé.", "", fieldsAttempted,
+            SetDiagnostic(new(DateTimeOffset.UtcNow, true, false, 0, "Synchronisation annulée ou délai dépassé.", "", fieldsArray,
                 owned.Length, 0, false, ""));
             throw;
         }
         catch (HttpRequestException ex)
         {
-            SetDiagnostic(new(DateTimeOffset.UtcNow, true, false, 0, "Erreur réseau Firestore : " + ex.Message, "", fieldsAttempted,
+            SetDiagnostic(new(DateTimeOffset.UtcNow, true, false, 0, "Erreur réseau Firestore : " + ex.Message, "", fieldsArray,
                 owned.Length, 0, false, ""));
             throw;
         }
@@ -167,15 +189,9 @@ public sealed class FirestoreSyncService : IDisposable
 
     private static string SyncBlocker(GameSnapshot snapshot)
     {
-        if (snapshot.PlayerNameConfidence < 75 || string.IsNullOrWhiteSpace(snapshot.PlayerName))
-            return "pseudo Arcane Rush non vérifié";
         if (!snapshot.CollectionSyncSafe || snapshot.OwnedCardIds.Count == 0
             || !snapshot.CollectionMethod.StartsWith("bootstrap-exact-ascii", StringComparison.Ordinal))
             return "collection Arcane Rush exacte non validée";
-        if (snapshot.Decks.Count < AppConfig.ExpectedDeckCount)
-            return $"{AppConfig.ExpectedDeckCount - snapshot.Decks.Count} deck(s) manquant(s)";
-        if (snapshot.Decks.Values.Any(deck => deck.CardIds.Count != AppConfig.ExpectedCardsPerDeck))
-            return "un deck n'a pas 20 cartes";
         return "scan incomplet";
     }
 

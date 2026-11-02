@@ -50,5 +50,9 @@
   "SK_3": {
     "name": "Jacques Grelot",
     "faction": "Neutres"
+  },
+  "SK_17": {
+    "name": "Elyra",
+    "faction": "Arcaniste"
   }
 }

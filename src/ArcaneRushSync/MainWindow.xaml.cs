@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private bool _closeCleanupComplete;
     private bool _syncRequested;
     private bool _syncInProgress;
+    private readonly System.Windows.Threading.DispatcherTimer _syncTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
     internal bool IsClosingForShutdown => _closing;
 
@@ -30,9 +31,9 @@ public partial class MainWindow : Window
         _scanner.SnapshotChanged += snap => QueueUi(() =>
         {
             UpdateSnapshotUi(snap);
-            if (_syncRequested && !_syncInProgress && snap.IsComplete(AppConfig.ExpectedDeckCount))
-                _ = CompletePendingSyncAsync(snap);
+            EvaluatePendingSync();
         });
+        _syncTimer.Tick += (_, _) => EvaluatePendingSync();
         _scanner.StatusChanged += text => QueueUi(() => SetStatus(text, "working"));
         _scanner.Stopped += () => QueueUi(OnScannerStopped);
         Loaded += MainWindow_Loaded;
@@ -155,15 +156,7 @@ public partial class MainWindow : Window
 
     private async void Sync_Click(object sender, RoutedEventArgs e)
     {
-        if (_auth.Session is null || _syncInProgress) return;
-
-        var current = _scanner.Snapshot;
-        if (current.IsComplete(AppConfig.ExpectedDeckCount))
-        {
-            _syncRequested = true;
-            await CompletePendingSyncAsync(current);
-            return;
-        }
+        if (_auth.Session is null || _syncInProgress || _syncRequested) return;
 
         SyncButton.IsEnabled = false;
         try
@@ -174,33 +167,85 @@ public partial class MainWindow : Window
                 return;
             }
 
-            _syncRequested = true;
-            SetStatus("Préparation du scanner sécurisé…", "working");
-            await _scanner.StartAsync(installCertificateIfNeeded: true);
-
-            SyncSubText.Text = "Scanner actif · lance/re-lance Arcane Rush";
+            // If the game is already open, its startup data has already gone by. Offer to close
+            // it normally; the scanner then waits for the fresh launch below.
             if (GameLauncherService.IsRunning())
             {
+                var answer = MessageBox.Show(
+                    "Arcane Rush est déjà ouvert.\n\nTa collection n’est envoyée par le jeu qu’au démarrage : il faut le relancer.\n\n" +
+                    "Fermer Arcane Rush maintenant et le relancer automatiquement ?",
+                    "Arcane Rush Sync",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                if (answer != MessageBoxResult.Yes)
+                {
+                    SyncButton.IsEnabled = true;
+                    return;
+                }
+            }
+
+            _syncRequested = true;
+            SetStatus("Préparation du scanner local…", "working");
+            await _scanner.StartAsync(installCertificateIfNeeded: true);
+            _syncTimer.Start();
+
+            if (GameLauncherService.IsRunning())
+            {
+                SetStatus("Fermeture d’Arcane Rush…", "working");
+                var closed = await GameLauncherService.TryCloseRunningGameAsync(TimeSpan.FromSeconds(20));
+                if (!closed)
+                {
+                    SetStatus("Arcane Rush ne s’est pas fermé tout seul. Ferme-le, puis relance-le : le scanner reste armé.", "working");
+                    SyncSubText.Text = "Scanner actif · en attente du relancement";
+                    return;
+                }
+                await Task.Delay(1500);
+            }
+
+            var launch = GameLauncherService.Launch();
+            if (launch.Started)
+            {
+                SyncSubText.Text = "Arcane Rush démarre · lecture de la collection…";
                 SetStatus(
-                    "Scanner prêt. Arcane Rush est déjà ouvert : ferme-le puis relance-le normalement depuis Steam ou ton raccourci. " +
-                    "La collection exacte est chargée au démarrage du jeu.",
+                    launch.Method == "steam"
+                        ? "Lancement d’Arcane Rush via Steam… Laisse le jeu charger jusqu’au menu : la synchronisation se fera toute seule."
+                        : "Lancement d’Arcane Rush… Laisse le jeu charger jusqu’au menu : la synchronisation se fera toute seule.",
                     "working");
             }
             else
             {
-                SetStatus(
-                    "Scanner prêt ✓ · lance Arcane Rush normalement depuis Steam ou ton raccourci. " +
-                    "Dès que les données seront complètes, le site sera synchronisé automatiquement.",
-                    "working");
+                SyncSubText.Text = "Scanner actif · lance Arcane Rush";
+                SetStatus("Impossible de lancer Arcane Rush automatiquement (Steam introuvable). Lance-le toi-même : le scanner est prêt.", "working");
             }
         }
         catch (Exception ex)
         {
             _syncRequested = false;
+            _syncTimer.Stop();
             SetStatus(ex.Message, "error");
             await _scanner.StopAsync();
             SyncButton.IsEnabled = _auth.Session is not null;
             SyncSubText.Text = "Clique pour réessayer";
+        }
+    }
+
+    private void EvaluatePendingSync()
+    {
+        if (!_syncRequested || _syncInProgress || _closing) return;
+        var snap = _scanner.Snapshot;
+        if (snap.IsComplete(AppConfig.ExpectedDeckCount))
+        {
+            _ = CompletePendingSyncAsync(snap);
+            return;
+        }
+
+        // Exact collection received but not every merchant deck: some players do not own all
+        // merchants. Wait for a quiet period (nothing new detected) and sync what we have.
+        if (snap.IsCollectionReady
+            && snap.LastDetectionChangeAt != DateTimeOffset.MinValue
+            && DateTimeOffset.UtcNow - snap.LastDetectionChangeAt >= AppConfig.PartialSyncQuietPeriod)
+        {
+            _ = CompletePendingSyncAsync(snap);
         }
     }
 
@@ -209,13 +254,13 @@ public partial class MainWindow : Window
         if (ScannerConsentStore.HasConsent) return true;
 
         var choice = MessageBox.Show(
-            "Pour lire uniquement les données utiles à la synchronisation Arcane Rush (pseudo, collection et decks), le Sync utilise un certificat local dédié dans TON profil Windows.\n\n" +
+            "Pour lire ta collection et tes decks pendant le démarrage d’Arcane Rush, le Sync utilise un petit relais réseau local et un certificat dédié dans TON profil Windows.\n\n" +
             "• aucun droit administrateur\n" +
-            "• seul api-overhaul.cbg.alleylabs.com est déchiffré\n" +
+            "• seul le trafic du jeu (api-overhaul.cbg.alleylabs.com) est lu ; tout le reste passe sans être déchiffré\n" +
             "• aucun paquet brut n'est conservé sur le disque\n" +
-            "• le proxy Windows est restauré après chaque scan\n" +
-            "• le certificat est créé une seule fois puis réutilisé\n" +
-            "• REPARER_RESEAU_WINDOWS.bat permet de le retirer manuellement\n\n" +
+            "• le proxy Windows est restauré dès que la collection est lue\n" +
+            "• Windows va afficher une fenêtre « Avertissement de sécurité » : réponds Oui (une seule fois)\n" +
+            "• le bouton « Réparer le réseau » retire tout en un clic\n\n" +
             "Autoriser ce scanner local ?",
             "Sécurité · Arcane Rush Sync",
             MessageBoxButton.YesNo,
@@ -231,21 +276,23 @@ public partial class MainWindow : Window
         if (!_syncRequested || _syncInProgress || _auth.Session is null) return;
 
         _syncRequested = false;
+        _syncTimer.Stop();
         _syncInProgress = true;
         SyncButton.IsEnabled = false;
         var success = false;
 
         try
         {
-            SetStatus("Données Arcane Rush complètes ✓ · restauration du réseau…", "working");
+            SetStatus("Collection Arcane Rush lue ✓ · restauration du réseau…", "working");
             await _scanner.StopAsync();
 
             SetStatus("Synchronisation sécurisée avec le site…", "working");
             await _sync.SyncAsync(snapshot);
 
             success = true;
+            var who = snapshot.HasVerifiedPlayerName ? snapshot.PlayerName + " · " : "";
             SetStatus(
-                $"Synchronisé et vérifié ✓ · {snapshot.PlayerName} + {snapshot.OwnedCardIds.Count} cartes + 13 decks.",
+                $"Synchronisé et vérifié ✓ · {who}{snapshot.OwnedCardIds.Count} cartes + {snapshot.ValidDecks.Count()} decks. Ta collection est à jour sur le site.",
                 "ok");
         }
         catch (Exception ex)
@@ -265,17 +312,58 @@ public partial class MainWindow : Window
     {
         if (_closing || _updateStarting || _syncInProgress || !_syncRequested) return;
 
-        _syncRequested = false;
-        SyncButton.IsEnabled = _auth.Session is not null;
-
         var snap = _scanner.Snapshot;
-        if (!snap.IsComplete(AppConfig.ExpectedDeckCount))
-            SyncSubText.Text = "Scan incomplet · clique pour réessayer";
+        if (snap.IsCollectionReady)
+        {
+            _ = CompletePendingSyncAsync(snap);
+            return;
+        }
+
+        _syncRequested = false;
+        _syncTimer.Stop();
+        SyncButton.IsEnabled = _auth.Session is not null;
+        SyncSubText.Text = "Scan incomplet · clique pour réessayer";
+    }
+
+    private async void Repair_Click(object sender, RoutedEventArgs e)
+    {
+        var answer = MessageBox.Show(
+            "Restaurer les réglages réseau Windows et retirer le certificat local d’Arcane Rush Sync ?\n\n" +
+            "À utiliser si Internet ne marche plus après un scan, ou avant de désinstaller. " +
+            "Windows peut demander de confirmer la suppression du certificat : réponds Oui.\n\n" +
+            "Le prochain scan redemandera simplement l’autorisation.",
+            "Réparer le réseau",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return;
+
+        RepairButton.IsEnabled = false;
+        try
+        {
+            _syncRequested = false;
+            _syncTimer.Stop();
+            await _scanner.StopAsync();
+            // UI thread on purpose: Windows shows its own confirmation when a root certificate is removed.
+            var result = NetworkRepairService.Repair(removeCertificates: true);
+            SetStatus(
+                $"Réseau vérifié ✓ · proxy {(result.ProxyRestored || result.ProxyDisabled ? "restauré" : "déjà normal")} · {result.CertificatesRemoved} certificat(s) retiré(s).",
+                "ok");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Réparation incomplète : " + ex.Message, "error");
+        }
+        finally
+        {
+            RepairButton.IsEnabled = true;
+            UpdateSnapshotUi(_scanner.Snapshot);
+        }
     }
 
     private async void Logout_Click(object sender, RoutedEventArgs e)
     {
         _syncRequested = false;
+        _syncTimer.Stop();
         await _scanner.StopAsync();
         _auth.Logout();
         ShowLogin();
@@ -291,7 +379,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(who)) who = _auth.Session?.Email;
         WelcomeText.Text = string.IsNullOrWhiteSpace(who) ? "Compte connecté" : $"Bonjour, {who}";
         UpdateSnapshotUi(_scanner.Snapshot);
-        SetStatus("Clique sur « Synchroniser avec le site », puis lance Arcane Rush normalement.", "idle");
+        SetStatus("Clique sur « Lancer Arcane Rush » : le jeu démarre et ta collection est envoyée sur ton compte du site.", "idle");
     }
 
     private void ShowLogin()
@@ -329,21 +417,17 @@ public partial class MainWindow : Window
             SyncButton.IsEnabled = false;
             if (complete)
                 SyncSubText.Text = "Données complètes · synchronisation…";
-            else if (snap.Decks.Count >= AppConfig.ExpectedDeckCount && !snap.CollectionSyncSafe)
-                SyncSubText.Text = "13 decks ✓ · collection exacte en attente";
-            else if (snap.Decks.Count >= AppConfig.ExpectedDeckCount && snap.CollectionSyncSafe && snap.PlayerNameConfidence < 75)
-                SyncSubText.Text = $"13 decks ✓ · {snap.OwnedCardIds.Count} cartes ✓ · pseudo en attente";
-            else if (snap.PlayerNameConfidence >= 75)
-                SyncSubText.Text = $"Pseudo {snap.PlayerName} ✓ · {snap.OwnedCardIds.Count} cartes · {Math.Max(0, AppConfig.ExpectedDeckCount - snap.Decks.Count)} deck(s) manquant(s)";
+            else if (snap.IsCollectionReady)
+                SyncSubText.Text = $"{snap.OwnedCardIds.Count} cartes ✓ · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks · finalisation…";
             else
-                SyncSubText.Text = $"Scan en cours · {snap.OwnedCardIds.Count} cartes · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks";
+                SyncSubText.Text = $"Lecture en cours · {snap.Decks.Count}/{AppConfig.ExpectedDeckCount} decks";
             return;
         }
 
         SyncButton.IsEnabled = _auth.Session is not null;
-        SyncSubText.Text = complete
-            ? $"{snap.PlayerName} · {snap.OwnedCardIds.Count} cartes · 13 decks prêts"
-            : "Clique ici avant de lancer le jeu";
+        SyncSubText.Text = snap.IsCollectionReady
+            ? $"Dernière lecture : {snap.OwnedCardIds.Count} cartes · {snap.Decks.Count} decks"
+            : "Démarre le jeu et envoie ta collection au site";
     }
 
     private void SetLoginBusy(bool busy, string status)

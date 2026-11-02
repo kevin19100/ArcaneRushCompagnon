@@ -55,7 +55,7 @@ public static class ProxyStateGuard
                 else if (value.ValueKind == JsonValueKind.String)
                     key.SetValue(name, value.GetString() ?? "", RegistryValueKind.String);
             }
-            RefreshInternetSettings();
+            NotifySettingsChanged();
             File.Delete(AppPaths.ProxyBackup);
             AppLog.Info("Windows proxy settings restored from safety backup.");
         }
@@ -73,7 +73,7 @@ public static class ProxyStateGuard
     [DllImport("wininet.dll", SetLastError = true)]
     private static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
 
-    private static void RefreshInternetSettings()
+    public static void NotifySettingsChanged()
     {
         try
         {

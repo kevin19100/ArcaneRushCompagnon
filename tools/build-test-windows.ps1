@@ -14,8 +14,8 @@ $out = Join-Path $root "artifacts\win-x64"
 if ([string]::IsNullOrWhiteSpace($Version)) {
   [xml]$projectXml = Get-Content $project
   $versionNode = Select-Xml -Xml $projectXml -XPath "/Project/PropertyGroup/Version" | Select-Object -First 1
-  $Version = if ($versionNode) { [string]$versionNode.Node.InnerText } else { "1.1.0" }
-  if ([string]::IsNullOrWhiteSpace($Version)) { $Version = "1.1.0" }
+  $Version = if ($versionNode) { [string]$versionNode.Node.InnerText } else { "1.2.0" }
+  if ([string]::IsNullOrWhiteSpace($Version)) { $Version = "1.2.0" }
 }
 
 if ([string]::IsNullOrWhiteSpace($GitHubRepository) -and (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -43,7 +43,7 @@ Write-Host "SDK utilise : $DotNetExe"
 if ($LASTEXITCODE -ne 0) { throw "Impossible d'executer le SDK .NET." }
 
 if (-not (Test-Path $nugetConfig)) {
-  throw "NuGet.Config est introuvable. Re-extrais completement l’archive Arcane Rush Sync 1.1.0."
+  throw "NuGet.Config est introuvable. Re-extrais completement l’archive Arcane Rush Sync."
 }
 
 # Never depend on the PC's global NuGet configuration/cache. The first test build

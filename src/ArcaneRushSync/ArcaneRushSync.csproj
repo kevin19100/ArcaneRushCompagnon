@@ -10,13 +10,18 @@
     <RootNamespace>ArcaneRushSync</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\ArcaneRushSync.ico</ApplicationIcon>
-    <Version>1.1.0</Version>
-    <FileVersion>1.1.0.0</FileVersion>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
     <Product>Arcane Rush Sync</Product>
     <Company>Arcane Rush Companion</Company>
     <Description>Synchronisation locale du pseudo, de la collection et des decks Arcane Rush avec Arcane Rush Companion.</Description>
     <Authors>Arcane Rush Companion</Authors>
+    <Copyright>© 2026 Arcane Rush Companion</Copyright>
+    <NeutralLanguage>fr-FR</NeutralLanguage>
+    <!-- Only ship French/English framework resources: ~40 fewer satellite DLLs in the package. -->
+    <SatelliteResourceLanguages>fr;en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>false</PublishSingleFile>
